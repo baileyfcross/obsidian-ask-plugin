@@ -70,6 +70,14 @@ export class LocalVaultAIView extends ItemView {
     this.unsubscribeStatus = null;
   }
 
+  async resetAfterConversationClear(): Promise<void> {
+    this.currentConversation = null;
+
+    await this.ensureConversation();
+    await this.refreshConversationSelect();
+    await this.renderConversation();
+  }
+
   private async renderShell(): Promise<void> {
     const container = this.contentEl;
     container.empty();

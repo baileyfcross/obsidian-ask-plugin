@@ -1,13 +1,13 @@
 {
   "name": "local-vault-ai",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Local RAG assistant for an Obsidian vault using Ollama and Orama.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "typecheck": "tsc --noEmit",
-    "package": "bash ./scripts/package.sh",
+	"package": "bash ./scripts/package.sh",
     "deploy:test": "bash ./scripts/deploy-test.sh"
   },
   "keywords": [

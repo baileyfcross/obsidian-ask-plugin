@@ -70,7 +70,7 @@ The plugin creates:
 
 ```text
 .obsidian/plugins/local-vault-ai/data/
-├── knowledge-index.msp
+├── knowledge-index.json
 ├── index-manifest.json
 └── conversations/
     ├── index.json
@@ -148,3 +148,56 @@ A later phase can add:
 - reranking
 - PDF/EPUB attachment indexing
 - note-writing actions with explicit confirmation
+
+## 0.2.1 persistence fix
+
+Version 0.2.1 removes `@orama/plugin-data-persistence/server`.
+
+The server persistence entry point dynamically imports `node:fs/promises`, which is not safe in the Obsidian plugin webview. The plugin now:
+
+- serializes Orama with `save()` / `load()` from `@orama/orama`
+- reads and writes derived plugin files with `app.vault.adapter`
+- uses Web Crypto for SHA-256 hashing
+- no longer requires Node filesystem/path/crypto modules for runtime storage
+
+
+## 0.2.2 conversation management
+
+Phase 2.2 separates conversation lifecycle from index lifecycle.
+
+### Rebuild index
+
+**Rebuild index preserves all conversations.**
+
+It only replaces:
+
+```text
+data/knowledge-index.json
+data/index-manifest.json
+```
+
+It does not modify:
+
+```text
+data/conversations/
+```
+
+### Delete all conversations
+
+A new option is available under:
+
+```text
+Settings
+→ Local Vault AI
+→ Conversations
+→ Delete all conversations
+```
+
+The action requires confirmation and deletes only the saved chat files and conversation index. It does not modify:
+
+- Obsidian Markdown notes
+- the knowledge index
+- the index manifest
+- plugin settings
+
+If the Local Vault AI chat sidebar is open, it is reset to a new empty conversation after deletion so an old in-memory conversation cannot be accidentally restored.

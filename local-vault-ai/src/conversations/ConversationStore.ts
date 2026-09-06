@@ -172,6 +172,39 @@ export class ConversationStore {
     await this.saveIndex(index);
   }
 
+  async deleteAll(): Promise<number> {
+    const index =
+      await this.loadIndex();
+
+    const ids = index.conversations.map(
+      (conversation) => conversation.id,
+    );
+
+    for (const id of ids) {
+      const path =
+        this.conversationPath(id);
+
+      if (
+        await this.adapter.exists(path)
+      ) {
+        await this.adapter.remove(path);
+      }
+    }
+
+    await this.saveIndex({
+      conversations: [],
+    });
+
+    return ids.length;
+  }
+
+  async count(): Promise<number> {
+    const index =
+      await this.loadIndex();
+
+    return index.conversations.length;
+  }
+
   private conversationPath(
     id: string,
   ): string {

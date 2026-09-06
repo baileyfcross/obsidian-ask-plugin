@@ -1,283 +1,229 @@
+import { Notice, Plugin, TAbstractFile, WorkspaceLeaf } from 'obsidian';
+import { DEFAULT_SETTINGS, LocalVaultAISettings } from './settings/Settings';
+import { LocalVaultAISettingTab } from './settings/SettingsTab';
+import { OllamaClient } from './ollama/OllamaClient';
+import { KnowledgeIndex } from './search/KnowledgeIndex';
+import { IndexManager } from './indexing/IndexManager';
 import {
-  Notice,
-  Plugin,
-  TAbstractFile,
-  WorkspaceLeaf,
-} from "obsidian";
-import {
-  DEFAULT_SETTINGS,
-  LocalVaultAISettings,
-} from "./settings/Settings";
-import { LocalVaultAISettingTab } from "./settings/SettingsTab";
-import { OllamaClient } from "./ollama/OllamaClient";
-import { KnowledgeIndex } from "./search/KnowledgeIndex";
-import { IndexManager } from "./indexing/IndexManager";
-import {
-  ensurePluginPaths,
-  getPluginPaths,
-  PluginPaths,
-} from "./storage/PluginPaths";
-import { ConversationStore } from "./conversations/ConversationStore";
-import { RagService } from "./rag/RagService";
-import {
-  LocalVaultAIView,
-  VIEW_TYPE_LOCAL_VAULT_AI,
-} from "./ui/ChatView";
+	ensurePluginPaths,
+	getPluginPaths,
+	PluginPaths,
+} from './storage/PluginPaths';
+import { ConversationStore } from './conversations/ConversationStore';
+import { RagService } from './rag/RagService';
+import { LocalVaultAIView, VIEW_TYPE_LOCAL_VAULT_AI } from './ui/ChatView';
+import { LectureService } from './lecture/LectureService';
 
 export default class LocalVaultAIPlugin extends Plugin {
-  settings!: LocalVaultAISettings;
+	settings!: LocalVaultAISettings;
 
-  ollama!: OllamaClient;
-  knowledgeIndex!: KnowledgeIndex;
-  indexManager!: IndexManager;
-  conversationStore!: ConversationStore;
-  ragService!: RagService;
+	ollama!: OllamaClient;
+	knowledgeIndex!: KnowledgeIndex;
+	indexManager!: IndexManager;
+	conversationStore!: ConversationStore;
+	ragService!: RagService;
+	lectureService!: LectureService;
 
-  private paths!: PluginPaths;
+	private paths!: PluginPaths;
 
-  async onload(): Promise<void> {
-    await this.loadSettings();
+	async onload(): Promise<void> {
+		await this.loadSettings();
 
-    this.paths = getPluginPaths(
-      this.app,
-      this.manifest.id,
-    );
+		this.paths = getPluginPaths(this.app, this.manifest.id);
 
-    await ensurePluginPaths(
-      this.app,
-      this.paths,
-    );
+		await ensurePluginPaths(this.app, this.paths);
 
-    this.ollama = new OllamaClient(
-      this.settings.ollamaUrl,
-    );
+		this.ollama = new OllamaClient(this.settings.ollamaUrl);
 
-    this.knowledgeIndex =
-      new KnowledgeIndex(
-        this.app.vault.adapter,
-        this.paths.indexPath,
-      );
+		this.knowledgeIndex = new KnowledgeIndex(
+			this.app.vault.adapter,
+			this.paths.indexPath,
+		);
 
-    this.indexManager =
-      new IndexManager(
-        this.app,
-        this.settings,
-        this.ollama,
-        this.knowledgeIndex,
-        this.paths.manifestPath,
-      );
+		this.indexManager = new IndexManager(
+			this.app,
+			this.settings,
+			this.ollama,
+			this.knowledgeIndex,
+			this.paths.manifestPath,
+		);
 
-    this.conversationStore =
-      new ConversationStore(
-        this.app.vault.adapter,
-        this.paths.conversationsDir,
-        this.paths.conversationsIndexPath,
-      );
+		this.conversationStore = new ConversationStore(
+			this.app.vault.adapter,
+			this.paths.conversationsDir,
+			this.paths.conversationsIndexPath,
+		);
 
-    this.ragService = new RagService(
-      this.ollama,
-      this.knowledgeIndex,
-      this.settings,
-    );
+		this.ragService = new RagService(
+			this.ollama,
+			this.knowledgeIndex,
+			this.settings,
+		);
 
-    this.registerView(
-      VIEW_TYPE_LOCAL_VAULT_AI,
-      (leaf) =>
-        new LocalVaultAIView(
-          leaf,
-          this,
-        ),
-    );
+		this.lectureService = new LectureService(
+			this.ollama,
+			this.knowledgeIndex,
+			this.settings,
+		);
 
-    this.addRibbonIcon(
-      "bot",
-      "Open Local Vault AI",
-      () => {
-        void this.activateView();
-      },
-    );
+		this.registerView(
+			VIEW_TYPE_LOCAL_VAULT_AI,
+			(leaf) => new LocalVaultAIView(leaf, this),
+		);
 
-    this.addCommand({
-      id: "open-local-vault-ai",
-      name: "Open Local Vault AI",
-      callback: () => {
-        void this.activateView();
-      },
-    });
+		this.addRibbonIcon('bot', 'Open Local Vault AI', () => {
+			void this.activateView();
+		});
 
-    this.addCommand({
-      id: "rebuild-local-vault-ai-index",
-      name: "Rebuild Local Vault AI index",
-      callback: async () => {
-        try {
-          await this.indexManager.rebuildAll();
-          new Notice(
-            "Local Vault AI index rebuilt successfully.",
-          );
-        } catch (error) {
-          new Notice(
-            error instanceof Error
-              ? error.message
-              : "Index rebuild failed.",
-          );
-        }
-      },
-    });
+		this.addCommand({
+			id: 'open-local-vault-ai',
+			name: 'Open Local Vault AI',
+			callback: () => {
+				void this.activateView();
+			},
+		});
 
-    this.addCommand({
-      id: "show-local-vault-ai-index-status",
-      name: "Show Local Vault AI index status",
-      callback: () => {
-        const status =
-          this.indexManager.getStatus();
+		this.addCommand({
+			id: 'rebuild-local-vault-ai-index',
+			name: 'Rebuild Local Vault AI index',
+			callback: async () => {
+				try {
+					await this.indexManager.rebuildAll();
+					new Notice('Local Vault AI index rebuilt successfully.');
+				} catch (error) {
+					new Notice(
+						error instanceof Error
+							? error.message
+							: 'Index rebuild failed.',
+					);
+				}
+			},
+		});
 
-        new Notice(
-          `${status.message}\n` +
-            `${status.documentCount} note(s), ` +
-            `${status.chunkCount} chunk(s).`,
-        );
-      },
-    });
+		this.addCommand({
+			id: 'show-local-vault-ai-index-status',
+			name: 'Show Local Vault AI index status',
+			callback: () => {
+				const status = this.indexManager.getStatus();
 
-    this.addSettingTab(
-      new LocalVaultAISettingTab(
-        this.app,
-        this,
-      ),
-    );
+				new Notice(
+					`${status.message}\n` +
+						`${status.documentCount} note(s), ` +
+						`${status.chunkCount} chunk(s).`,
+				);
+			},
+		});
 
-    this.registerVaultEvents();
+		this.addSettingTab(new LocalVaultAISettingTab(this.app, this));
 
-    this.app.workspace.onLayoutReady(() => {
-      void this.indexManager.initialize();
-    });
-  }
+		this.registerVaultEvents();
 
-  onunload(): void {
-    this.indexManager?.dispose();
+		this.app.workspace.onLayoutReady(() => {
+			void this.indexManager.initialize();
+		});
+	}
 
-    if (
-      this.indexManager &&
-      this.knowledgeIndex?.isReady()
-    ) {
-      void this.indexManager.flush();
-    }
+	onunload(): void {
+		this.indexManager?.dispose();
 
-    this.app.workspace.detachLeavesOfType(
-      VIEW_TYPE_LOCAL_VAULT_AI,
-    );
-  }
+		if (this.indexManager && this.knowledgeIndex?.isReady()) {
+			void this.indexManager.flush();
+		}
 
-  async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_LOCAL_VAULT_AI);
+	}
 
-    this.ollama?.setBaseUrl(
-      this.settings.ollamaUrl,
-    );
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
 
-    if (this.indexManager) {
-      await this.indexManager.onSettingsChanged();
-    }
-  }
+		this.ollama?.setBaseUrl(this.settings.ollamaUrl);
 
-  async activateView(): Promise<void> {
-    let leaf =
-      this.app.workspace.getLeavesOfType(
-        VIEW_TYPE_LOCAL_VAULT_AI,
-      )[0];
+		if (this.indexManager) {
+			await this.indexManager.onSettingsChanged();
+		}
+	}
 
-    if (!leaf) {
-      leaf =
-        this.app.workspace.getRightLeaf(false) ??
-        this.app.workspace.getLeaf(true);
+	async activateView(): Promise<void> {
+		let leaf = this.app.workspace.getLeavesOfType(
+			VIEW_TYPE_LOCAL_VAULT_AI,
+		)[0];
 
-      await leaf.setViewState({
-        type: VIEW_TYPE_LOCAL_VAULT_AI,
-        active: true,
-      });
-    }
+		if (!leaf) {
+			leaf =
+				this.app.workspace.getRightLeaf(false) ??
+				this.app.workspace.getLeaf(true);
 
-    this.app.workspace.revealLeaf(leaf);
-  }
+			await leaf.setViewState({
+				type: VIEW_TYPE_LOCAL_VAULT_AI,
+				active: true,
+			});
+		}
 
-  private async loadSettings(): Promise<void> {
-    const saved =
-      (await this.loadData()) as
-        | Partial<LocalVaultAISettings>
-        | null;
+		this.app.workspace.revealLeaf(leaf);
+	}
 
-    this.settings = Object.assign(
-      {},
-      DEFAULT_SETTINGS,
-      saved ?? {},
-    );
+	async deleteAllConversations(): Promise<number> {
+		const deletedCount = await this.conversationStore.deleteAll();
 
-    this.normalizeWeights();
-  }
+		const leaves = this.app.workspace.getLeavesOfType(
+			VIEW_TYPE_LOCAL_VAULT_AI,
+		);
 
-  private normalizeWeights(): void {
-    const vector = Math.min(
-      1,
-      Math.max(
-        0,
-        this.settings.hybridVectorWeight,
-      ),
-    );
+		for (const leaf of leaves) {
+			if (leaf.view instanceof LocalVaultAIView) {
+				await leaf.view.resetAfterConversationClear();
+			}
+		}
 
-    this.settings.hybridVectorWeight =
-      vector;
+		return deletedCount;
+	}
 
-    this.settings.hybridTextWeight =
-      Number((1 - vector).toFixed(2));
-  }
+	private async loadSettings(): Promise<void> {
+		const saved =
+			(await this.loadData()) as Partial<LocalVaultAISettings> | null;
 
-  private registerVaultEvents(): void {
-    this.registerEvent(
-      this.app.vault.on(
-        "create",
-        (file: TAbstractFile) => {
-          this.indexManager.handleCreate(
-            file,
-          );
-        },
-      ),
-    );
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, saved ?? {});
 
-    this.registerEvent(
-      this.app.vault.on(
-        "modify",
-        (file: TAbstractFile) => {
-          this.indexManager.handleModify(
-            file,
-          );
-        },
-      ),
-    );
+		this.normalizeWeights();
+	}
 
-    this.registerEvent(
-      this.app.vault.on(
-        "rename",
-        (
-          file: TAbstractFile,
-          oldPath: string,
-        ) => {
-          this.indexManager.handleRename(
-            file,
-            oldPath,
-          );
-        },
-      ),
-    );
+	private normalizeWeights(): void {
+		const vector = Math.min(
+			1,
+			Math.max(0, this.settings.hybridVectorWeight),
+		);
 
-    this.registerEvent(
-      this.app.vault.on(
-        "delete",
-        (file: TAbstractFile) => {
-          this.indexManager.handleDelete(
-            file,
-          );
-        },
-      ),
-    );
-  }
+		this.settings.hybridVectorWeight = vector;
+
+		this.settings.hybridTextWeight = Number((1 - vector).toFixed(2));
+	}
+
+	private registerVaultEvents(): void {
+		this.registerEvent(
+			this.app.vault.on('create', (file: TAbstractFile) => {
+				this.indexManager.handleCreate(file);
+			}),
+		);
+
+		this.registerEvent(
+			this.app.vault.on('modify', (file: TAbstractFile) => {
+				this.indexManager.handleModify(file);
+			}),
+		);
+
+		this.registerEvent(
+			this.app.vault.on(
+				'rename',
+				(file: TAbstractFile, oldPath: string) => {
+					this.indexManager.handleRename(file, oldPath);
+				},
+			),
+		);
+
+		this.registerEvent(
+			this.app.vault.on('delete', (file: TAbstractFile) => {
+				this.indexManager.handleDelete(file);
+			}),
+		);
+	}
 }

@@ -159,6 +159,7 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "Algebraic Identity.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
@@ -168,7 +169,7 @@
             }
           },
           {
-            "id": "de4b334bdc3b4e93",
+            "id": "0ab5b5b5f853e298",
             "type": "leaf",
             "state": {
               "type": "local-vault-ai-view",
@@ -186,24 +187,26 @@
   },
   "left-ribbon": {
     "hiddenItems": {
+      "local-vault-ai:Open Local Vault AI": false,
       "switcher:Open quick switcher": false,
       "graph:Open graph view": false,
       "canvas:Create new canvas": false,
       "daily-notes:Open today's daily note": false,
       "templates:Insert template": false,
       "command-palette:Open command palette": false,
-      "bases:Create new base": false,
-      "local-vault-ai:Open Local Vault AI": false
+      "bases:Create new base": false
     }
   },
-  "active": "de4b334bdc3b4e93",
+  "active": "0ab5b5b5f853e298",
   "lastOpenFiles": [
+    "Untitled.base",
+    "Untitled 1.base",
+    "Algebraic Identity.md",
     "Algorithm Input.md",
     "Algorithm Effectiveness.md",
     "Algebraic Word Problem.md",
     "Algebraic Term.md",
     "Algebraic Simplification.md",
-    "Algebraic Identity.md",
     "Algorithm Output.md"
   ]
 }

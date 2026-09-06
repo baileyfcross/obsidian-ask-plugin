@@ -1,0 +1,71 @@
+{
+  "version": 3,
+  "embeddingModel": "embeddinggemma",
+  "embeddingDimensions": 768,
+  "lastIndexedAt": "2026-09-06T21:09:16.664Z",
+  "documents": {
+    "Algorithm Output.md": {
+      "hash": "72f6cb164c43cdf60fd866697390dc9d18dd2d9c8228b030705801da47bdc391",
+      "mtime": 1788668178175,
+      "chunkIds": [
+        "Algorithm Output.md::0",
+        "Algorithm Output.md::1",
+        "Algorithm Output.md::2"
+      ]
+    },
+    "Algorithm Input.md": {
+      "hash": "cc869056dbda241c51f06d460375c6ad792ed61ab892a0ef91dbc4f535d5b34c",
+      "mtime": 1788668176741,
+      "chunkIds": [
+        "Algorithm Input.md::0",
+        "Algorithm Input.md::1",
+        "Algorithm Input.md::2"
+      ]
+    },
+    "Algorithm Effectiveness.md": {
+      "hash": "12337bde7daa97c4ed70d55fa44aeb8b1c35ac329dc644b26c3d2926800d2553",
+      "mtime": 1788668181085,
+      "chunkIds": [
+        "Algorithm Effectiveness.md::0",
+        "Algorithm Effectiveness.md::1",
+        "Algorithm Effectiveness.md::2"
+      ]
+    },
+    "Algebraic Word Problem.md": {
+      "hash": "53a48a7d03ba4adf2758021a3e0189c8ea803449598c7c8470424d35d595ac8d",
+      "mtime": 1788666735774,
+      "chunkIds": [
+        "Algebraic Word Problem.md::0",
+        "Algebraic Word Problem.md::1",
+        "Algebraic Word Problem.md::2"
+      ]
+    },
+    "Algebraic Term.md": {
+      "hash": "079c07a7c3db72b4789735ce9a16b99623a92faa4d44c9f1d62944b0b4e6f5ba",
+      "mtime": 1788666360694,
+      "chunkIds": [
+        "Algebraic Term.md::0",
+        "Algebraic Term.md::1",
+        "Algebraic Term.md::2"
+      ]
+    },
+    "Algebraic Simplification.md": {
+      "hash": "ac570a551738df4e7ce4c767f1c22ac52898cfda708c151dad989278350a07d1",
+      "mtime": 1788666370733,
+      "chunkIds": [
+        "Algebraic Simplification.md::0",
+        "Algebraic Simplification.md::1",
+        "Algebraic Simplification.md::2"
+      ]
+    },
+    "Algebraic Identity.md": {
+      "hash": "026a8c2be8dbaa106c6ecac69af61f295fe63f85b87d064944b200d89a69c72f",
+      "mtime": 1788666720624,
+      "chunkIds": [
+        "Algebraic Identity.md::0",
+        "Algebraic Identity.md::1",
+        "Algebraic Identity.md::2"
+      ]
+    }
+  }
+}

@@ -1,8 +1,30 @@
-/*
+.local-vault-ai {
+	padding: 12px;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.local-vault-ai-status {
+	color: var(--text-muted);
+	margin-bottom: 12px;
+}
 
-If your plugin does not need CSS, delete this file.
+.local-vault-ai-input {
+	width: 100%;
+	min-height: 100px;
+	margin-top: 12px;
+	margin-bottom: 8px;
+	resize: vertical;
+}
 
-*/
+.local-vault-ai-output {
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.local-vault-ai-source {
+	display: block;
+	width: 100%;
+	margin: 4px 0;
+	text-align: left;
+	white-space: normal;
+}

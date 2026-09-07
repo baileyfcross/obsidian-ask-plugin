@@ -35,6 +35,7 @@ export interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  thinking?: string;
   sources?: ConversationSource[];
 }
 
@@ -55,6 +56,7 @@ export interface ConversationSummary {
 
 export interface RagAnswer {
   answer: string;
+  thinking?: string;
   sources: RetrievedChunk[];
 }
 

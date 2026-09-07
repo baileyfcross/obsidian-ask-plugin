@@ -112,3 +112,105 @@
   margin: auto 0;
   padding: 16px;
 }
+
+
+.local-vault-ai-reasoning {
+  margin: 0 0 10px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary-alt);
+}
+
+.local-vault-ai-reasoning summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  user-select: none;
+}
+
+.local-vault-ai-reasoning[open] summary {
+  margin-bottom: 8px;
+}
+
+.local-vault-ai-reasoning-body {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+
+/* Live reasoning / streaming response */
+
+.local-vault-ai-message-body,
+.local-vault-ai-reasoning-body {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.local-vault-ai-message-body *,
+.local-vault-ai-reasoning-body * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.local-vault-ai-message-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.local-vault-ai-message-header
+  .local-vault-ai-message-role {
+  margin-bottom: 0;
+}
+
+.local-vault-ai-copy-button {
+  padding: 2px 8px;
+  font-size: var(--font-ui-smaller);
+}
+
+.local-vault-ai-live-status {
+  margin: 4px 0 8px 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.local-vault-ai-live-status.is-working::before {
+  content: "●";
+  display: inline-block;
+  margin-right: 6px;
+  animation:
+    local-vault-ai-pulse
+    1.1s ease-in-out infinite;
+}
+
+.local-vault-ai-live-status.is-error {
+  color: var(--text-error);
+}
+
+.local-vault-ai-reasoning-live[open] {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.local-vault-ai-live-answer {
+  white-space: pre-wrap;
+}
+
+@keyframes local-vault-ai-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}

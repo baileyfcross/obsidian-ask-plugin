@@ -1,6 +1,10 @@
 {
   "ollamaUrl": "http://localhost:11434",
-  "chatModel": "qwen3:8b",
+  "chatModel": "gpt-oss:20b",
+  "chatReasoningEffort": "low",
+  "chatKeepAlive": "5m",
+  "showModelReasoning": true,
+  "lectureModel": "qwen3:30b-instruct",
   "embeddingModel": "embeddinggemma",
   "autoIndex": true,
   "topK": 8,

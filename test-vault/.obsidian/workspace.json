@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Algebraic Identity.md",
+                "file": "Algebraic Word Problem.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Algebraic Identity"
+              "title": "Algebraic Word Problem"
             }
           }
         ]
@@ -169,7 +169,7 @@
             }
           },
           {
-            "id": "0ab5b5b5f853e298",
+            "id": "517746d12288b41d",
             "type": "leaf",
             "state": {
               "type": "local-vault-ai-view",
@@ -197,16 +197,16 @@
       "local-vault-ai:Open Local Vault AI": false
     }
   },
-  "active": "0ab5b5b5f853e298",
+  "active": "eda654493f4e5255",
   "lastOpenFiles": [
-    "Untitled.base",
-    "Untitled 1.base",
-    "Algebraic Identity.md",
     "Algorithm Input.md",
-    "Algorithm Effectiveness.md",
+    "Algorithm Output.md",
+    "Algebraic Simplification.md",
     "Algebraic Word Problem.md",
     "Algebraic Term.md",
-    "Algebraic Simplification.md",
-    "Algorithm Output.md"
+    "Algorithm Effectiveness.md",
+    "Algebraic Identity.md",
+    "Untitled.base",
+    "Untitled 1.base"
   ]
 }

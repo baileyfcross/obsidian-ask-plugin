@@ -2,6 +2,7 @@ import { Notice, Plugin, TAbstractFile, WorkspaceLeaf } from 'obsidian';
 import { DEFAULT_SETTINGS, LocalVaultAISettings } from './settings/Settings';
 import { LocalVaultAISettingTab } from './settings/SettingsTab';
 import { OllamaClient } from './ollama/OllamaClient';
+import { ModelRuntimeManager } from './ollama/ModelRuntimeManager';
 import { KnowledgeIndex } from './search/KnowledgeIndex';
 import { IndexManager } from './indexing/IndexManager';
 import {
@@ -18,6 +19,7 @@ export default class LocalVaultAIPlugin extends Plugin {
 	settings!: LocalVaultAISettings;
 
 	ollama!: OllamaClient;
+	modelRuntime!: ModelRuntimeManager;
 	knowledgeIndex!: KnowledgeIndex;
 	indexManager!: IndexManager;
 	conversationStore!: ConversationStore;
@@ -34,6 +36,8 @@ export default class LocalVaultAIPlugin extends Plugin {
 		await ensurePluginPaths(this.app, this.paths);
 
 		this.ollama = new OllamaClient(this.settings.ollamaUrl);
+
+		this.modelRuntime = new ModelRuntimeManager(this.ollama);
 
 		this.knowledgeIndex = new KnowledgeIndex(
 			this.app.vault.adapter,
@@ -58,6 +62,7 @@ export default class LocalVaultAIPlugin extends Plugin {
 			this.ollama,
 			this.knowledgeIndex,
 			this.settings,
+			this.modelRuntime,
 		);
 
 		this.lectureService = new LectureService(

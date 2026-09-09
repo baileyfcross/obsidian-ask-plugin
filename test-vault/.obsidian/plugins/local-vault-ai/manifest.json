@@ -1,7 +1,7 @@
 {
   "id": "local-vault-ai",
   "name": "Local Vault AI",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "minAppVersion": "1.7.2",
   "description": "A fully local Obsidian vault assistant using Ollama and hybrid retrieval.",
   "author": "Bailey",

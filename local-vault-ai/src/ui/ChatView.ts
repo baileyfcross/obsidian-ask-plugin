@@ -635,6 +635,16 @@ export class LocalVaultAIView
           continue;
         }
 
+        const pdfPageLabel =
+          source.sourceType === "pdf" &&
+          source.pageStart &&
+          source.pageStart > 0
+            ? source.pageEnd &&
+              source.pageEnd !== source.pageStart
+              ? ` (PDF pp. ${source.pageStart}-${source.pageEnd})`
+              : ` (PDF p. ${source.pageStart})`
+            : "";
+
         const button =
           sources.createEl(
             "button",
@@ -643,6 +653,7 @@ export class LocalVaultAIView
                 "local-vault-ai-source",
               text:
                 `[${index + 1}] ${source.filePath}` +
+                pdfPageLabel +
                 (source.heading
                   ? ` → ${source.heading}`
                   : ""),
@@ -1017,6 +1028,50 @@ export class LocalVaultAIView
                   this.scrollToBottom();
                 },
 
+              onRetrievalInfo:
+                (info) => {
+                  const parts:
+                    string[] = [];
+
+                  if (
+                    info.sourceFile
+                  ) {
+                    parts.push(
+                      info.sourceFile,
+                    );
+                  }
+
+                  if (
+                    info.section
+                  ) {
+                    parts.push(
+                      `section ${info.section}`,
+                    );
+                  }
+
+                  parts.push(
+                    `${info.chunkCount} chunk${info.chunkCount === 1 ? "" : "s"}`,
+                  );
+
+                  parts.push(
+                    `${info.contextCharacters.toLocaleString()} chars`,
+                  );
+
+                  streamingUi
+                    .status
+                    .setText(
+                      `Retrieved ${parts.join(" · ")}…`,
+                    );
+
+                  streamingUi
+                    .status
+                    .addClass(
+                      "is-working",
+                    );
+
+                  this.scrollToBottom();
+                },
+
               onThinking:
                 (thinking) => {
                   if (
@@ -1097,6 +1152,12 @@ export class LocalVaultAIView
                   source.heading,
                 score:
                   source.score,
+                sourceType:
+                  source.sourceType,
+                pageStart:
+                  source.pageStart,
+                pageEnd:
+                  source.pageEnd,
               }),
             ),
         };

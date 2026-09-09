@@ -1,0 +1,73 @@
+{
+  "id": "7e5f012d-2c55-423c-a2c7-41979b07d4fc",
+  "title": "What does foundations of computer science say...",
+  "createdAt": "2026-09-09T03:47:36.131Z",
+  "updatedAt": "2026-09-09T05:14:41.873Z",
+  "messages": [
+    {
+      "id": "a31197d2-f652-4484-8151-506feaed5cbf",
+      "role": "user",
+      "content": "What does foundations of computer science say for section 1.5?",
+      "createdAt": "2026-09-09T03:47:50.845Z"
+    },
+    {
+      "id": "04911f09-859f-4e3e-8131-d1801277040c",
+      "role": "user",
+      "content": "What does foundations of computer science say for section 1.5?",
+      "createdAt": "2026-09-09T03:50:36.094Z"
+    },
+    {
+      "id": "0561665a-82ea-4a3f-ba5d-8d76cf0e9780",
+      "role": "user",
+      "content": "What does foundations of computer science say for section 1.5?",
+      "createdAt": "2026-09-09T04:01:54.756Z"
+    },
+    {
+      "id": "e3fb8cd0-332a-4c8d-b8b9-44de39f53d10",
+      "role": "user",
+      "content": "What does foundations of computer science say for section 1.5?",
+      "createdAt": "2026-09-09T05:11:29.717Z"
+    },
+    {
+      "id": "71e640e3-12d4-4977-9634-6dc2eb5fcb2b",
+      "role": "assistant",
+      "content": "I couldn’t find any excerpt from the vault that corresponds to section 1.5 of *Foundations of Computer Science*. The available PDF index and section snippets do not include that heading, so the vault does not contain enough information to answer your question.",
+      "thinking": "We need to answer what Foundations of Computer Science says for section 1.5. The user asks multiple times. We must provide answer focusing on section 1.5. The vault sources: PDFs of Foundations of Computation (2.3.2). We need section 1.5. The sources provided: some entries show pages 114, 218, 125, 197 etc. But section 1.5 not listed. We might need to search for 1.5. There's no direct source listing. Could be in the PDF but not captured. We need to check if any source covers section 1.5. Source 1 shows many entries but no 1.5. Source 2 is index. Source 3 and 4 irrelevant. So likely the index doesn't have 1.5. There may be a section 1.5 somewhere else. Without source, we must say that vault doesn't contain enough information.\n\nThus answer: \"The vault doesn't contain info about section 1.5.\" Cite that no source found. Provide explanation.",
+      "createdAt": "2026-09-09T05:14:41.873Z",
+      "sources": [
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "SQL, 114",
+          "score": 0.8774058362918522,
+          "sourceType": "pdf",
+          "pageStart": 222,
+          "pageEnd": 222
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "218 INDEX",
+          "score": 0.7885923990852775,
+          "sourceType": "pdf",
+          "pageStart": 222,
+          "pageEnd": 222
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "L 1 = {011, 1010, 111}",
+          "score": 0.7533809043833863,
+          "sourceType": "pdf",
+          "pageStart": 125,
+          "pageEnd": 125
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "5.1 Turing Machines . . . . . . . . . . . . . . . . . . . . . . . . . . . 197",
+          "score": 0.7220985776980433,
+          "sourceType": "pdf",
+          "pageStart": 4,
+          "pageEnd": 4
+        }
+      ]
+    }
+  ]
+}

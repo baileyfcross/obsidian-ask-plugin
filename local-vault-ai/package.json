@@ -1,6 +1,6 @@
 {
   "name": "local-vault-ai",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Local RAG assistant for an Obsidian vault using Ollama and Orama.",
   "main": "main.js",
   "scripts": {
@@ -14,11 +14,13 @@
     "obsidian",
     "ollama",
     "rag",
-    "local-ai"
+    "local-ai",
+	"pdf"
   ],
   "license": "MIT",
   "dependencies": {
-    "@orama/orama": "^3.0.0"
+    "@orama/orama": "^3.0.0",
+	"pdfjs-dist": "^6.3.289"
   },
   "devDependencies": {
     "@types/node": "^22.15.17",

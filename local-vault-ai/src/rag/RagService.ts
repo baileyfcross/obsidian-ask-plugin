@@ -33,7 +33,10 @@ export interface RagRetrievalInfo {
     RagRetrievalMode;
 
   sourceFile?: string;
+  sourceConfidence?: number;
+
   section?: string;
+  sectionTitle?: string;
 
   chunkCount: number;
   contextCharacters: number;
@@ -41,7 +44,8 @@ export interface RagRetrievalInfo {
 
 export interface RagStreamCallbacks {
   onStage?: (
-    stage: RagStreamStage,
+    stage:
+      RagStreamStage,
   ) => void;
 
   onRetrievalInfo?: (
@@ -58,17 +62,14 @@ export interface RagStreamCallbacks {
   ) => void;
 }
 
-const SECTION_CONTEXT_CHUNKS = 4;
-const SOURCE_CONTEXT_CHUNKS = 6;
+const SECTION_CONTEXT_CHUNKS =
+  6;
 
-/*
- * This is intentionally a character budget rather
- * than a token estimate. It is deterministic, cheap,
- * and prevents a large PDF retrieval from sending
- * tens of thousands of characters to an 8B model.
- */
+const SOURCE_CONTEXT_CHUNKS =
+  6;
+
 const MAX_CONTEXT_CHARACTERS =
-  16000;
+  18000;
 
 export class RagService {
   constructor(
@@ -118,11 +119,14 @@ export class RagService {
       this.modelRuntime
         .acquireJob({
           kind: "chat",
+
           label:
             "Answering vault question",
+
           models: [
             this.settings
               .embeddingModel,
+
             this.settings
               .chatModel,
           ],
@@ -144,159 +148,203 @@ export class RagService {
           question,
         );
 
-      let retrievalMode:
-        RagRetrievalMode =
-        requestedSource
-          ? "source"
-          : "hybrid";
-
-      let retrievedSources:
-        RetrievedChunk[] = [];
-
       /*
-       * Fast path:
-       *
-       * If both a source and an explicit numbered
-       * section are known, try a direct lexical
-       * section lookup first.
-       *
-       * No embedding request is required here.
+       * Explicit source + explicit section is now an
+       * exact metadata lookup. Do not silently fall
+       * back to unrelated semantic matches if the
+       * section was not identified during indexing.
        */
       if (
         requestedSource &&
         requestedSection
       ) {
-        const sectionSources =
+        const exactSection =
           await this.index
-            .searchSectionInSource(
+            .searchExactSection(
               requestedSource
                 .filePath,
+
               requestedSection,
-              SECTION_CONTEXT_CHUNKS,
+
+              12,
             );
 
         if (
-          sectionSources.length >
+          exactSection.length ===
           0
         ) {
-          retrievedSources =
-            sectionSources;
+          callbacks
+            ?.onRetrievalInfo?.({
+              mode:
+                "section",
 
-          retrievalMode =
-            "section";
+              sourceFile:
+                requestedSource
+                  .fileName,
+
+              sourceConfidence:
+                requestedSource
+                  .confidence,
+
+              section:
+                requestedSection,
+
+              chunkCount: 0,
+              contextCharacters:
+                0,
+            });
+
+          const answer =
+            `I found the requested source "${requestedSource.fileName}", ` +
+            `but section ${requestedSection} was not identified in its indexed PDF section metadata. ` +
+            "I did not substitute unrelated pages.";
+
+          callbacks?.onStage?.(
+            "answering",
+          );
+
+          callbacks?.onAnswer?.(
+            answer,
+          );
+
+          return {
+            answer,
+            sources: [],
+          };
         }
-      }
 
-      /*
-       * Semantic fallback:
-       *
-       * - no explicit section,
-       * - direct section lookup found nothing, or
-       * - no named source was resolved.
-       */
-      if (
-        retrievedSources.length ===
-        0
-      ) {
-        const retrievalQuery =
-          this.makeRetrievalQuery(
+        const sources =
+          this.applyContextBudget(
+            exactSection,
+
+            SECTION_CONTEXT_CHUNKS,
+          );
+
+        const sectionTitle =
+          sources.find(
+            (source) =>
+              Boolean(
+                source
+                  .sectionTitle,
+              ),
+          )?.sectionTitle;
+
+        this.reportRetrieval(
+          callbacks,
+          {
+            mode:
+              "section",
+
+            source:
+              requestedSource,
+
+            section:
+              requestedSection,
+
+            sectionTitle,
+
+            sources,
+          },
+        );
+
+        return await this
+          .generateAnswer(
             question,
             history,
             requestedSource,
             requestedSection,
+            sources,
+            callbacks,
+            signal,
           );
-
-        const embeddings =
-          await this.ollama
-            .embed(
-              this.settings
-                .embeddingModel,
-              [retrievalQuery],
-            );
-
-        const queryVector =
-          embeddings[0];
-
-        if (!queryVector) {
-          throw new Error(
-            "Could not create a query embedding.",
-          );
-        }
-
-        retrievedSources =
-          await this.index
-            .hybridSearch(
-              retrievalQuery,
-              queryVector,
-              {
-                /*
-                 * Previously named PDFs were expanded
-                 * to at least 12 chunks. That can make
-                 * qwen3:8b spend a long time evaluating
-                 * the prompt before any streamed token
-                 * is available.
-                 */
-                limit:
-                  requestedSource
-                    ? SOURCE_CONTEXT_CHUNKS
-                    : this.settings
-                        .topK,
-
-                textWeight:
-                  this.settings
-                    .hybridTextWeight,
-
-                vectorWeight:
-                  this.settings
-                    .hybridVectorWeight,
-
-                similarity:
-                  this.settings
-                    .minVectorSimilarity,
-
-                sourcePath:
-                  requestedSource
-                    ?.filePath,
-              },
-            );
       }
 
-      const sources =
-        this.applyContextBudget(
-          retrievedSources,
+      /*
+       * Normal semantic/hybrid path.
+       */
+      const retrievalQuery =
+        this.makeRetrievalQuery(
+          question,
+          history,
+          requestedSource,
           requestedSection,
         );
 
-      const contextCharacters =
-        sources.reduce(
-          (
-            total,
-            source,
-          ) =>
-            total +
-            source.content
-              .length,
-          0,
+      const embeddings =
+        await this.ollama
+          .embed(
+            this.settings
+              .embeddingModel,
+            [retrievalQuery],
+          );
+
+      const queryVector =
+        embeddings[0];
+
+      if (!queryVector) {
+        throw new Error(
+          "Could not create a query embedding.",
+        );
+      }
+
+      const retrieved =
+        await this.index
+          .hybridSearch(
+            retrievalQuery,
+            queryVector,
+            {
+              limit:
+                requestedSource
+                  ? SOURCE_CONTEXT_CHUNKS
+                  : this.settings
+                      .topK,
+
+              textWeight:
+                this.settings
+                  .hybridTextWeight,
+
+              vectorWeight:
+                this.settings
+                  .hybridVectorWeight,
+
+              similarity:
+                this.settings
+                  .minVectorSimilarity,
+
+              sourcePath:
+                requestedSource
+                  ?.filePath,
+            },
+          );
+
+      const sources =
+        this.applyContextBudget(
+          retrieved,
+
+          requestedSource
+            ? SOURCE_CONTEXT_CHUNKS
+            : this.settings
+                .topK,
         );
 
-      callbacks
-        ?.onRetrievalInfo?.({
+      this.reportRetrieval(
+        callbacks,
+        {
           mode:
-            retrievalMode,
-
-          sourceFile:
             requestedSource
-              ?.fileName,
+              ? "source"
+              : "hybrid",
+
+          source:
+            requestedSource,
 
           section:
             requestedSection ??
             undefined,
 
-          chunkCount:
-            sources.length,
-
-          contextCharacters,
-        });
+          sources,
+        },
+      );
 
       if (
         this.settings
@@ -305,11 +353,8 @@ export class RagService {
       ) {
         const answer =
           requestedSource
-            ? requestedSection
-              ? `I found the requested source "${requestedSource.fileName}", ` +
-                `but I could not retrieve indexed content for section ${requestedSection}.`
-              : `I found the requested source "${requestedSource.fileName}", ` +
-                "but I could not retrieve a relevant indexed section for that question."
+            ? `I found the requested source "${requestedSource.fileName}", ` +
+              "but I could not retrieve relevant indexed content for that question."
             : "I couldn't find enough information in your indexed vault to answer that question.";
 
         callbacks?.onStage?.(
@@ -326,165 +371,254 @@ export class RagService {
         };
       }
 
-      const sourceContext =
-        this.buildSourceContext(
-          sources,
-        );
-
-      const systemPrompt =
-        this.makeSystemPrompt(
+      return await this
+        .generateAnswer(
+          question,
+          history,
           requestedSource,
           requestedSection,
+          sources,
+          callbacks,
+          signal,
         );
-
-      /*
-       * Keep a small amount of conversation context.
-       * The source material should dominate the
-       * context window for document questions.
-       */
-      const recentHistory =
-        history
-          .slice(-4)
-          .map(
-            (message) => ({
-              role:
-                message.role,
-              content:
-                message.content,
-            }),
-          );
-
-      const userPrompt = [
-        "QUESTION",
-        "",
-        question,
-        "",
-        "REQUESTED SOURCE",
-        "",
-        requestedSource
-          ? [
-              `File: ${requestedSource.filePath}`,
-              `Title: ${requestedSource.title}`,
-              `Type: ${requestedSource.sourceType}`,
-              requestedSection
-                ? `Requested section: ${requestedSection}`
-                : "",
-              "Retrieval has been restricted to this source.",
-            ]
-              .filter(Boolean)
-              .join("\n")
-          : "(No explicit source was resolved.)",
-        "",
-        "VAULT SOURCES",
-        "",
-        sourceContext ||
-          "(No vault sources were retrieved.)",
-      ].join("\n");
-
-      let thinkingStarted =
-        false;
-
-      let answerStarted =
-        false;
-
-      const response =
-        await this.ollama
-          .chatStreamWithThinking(
-            this.settings
-              .chatModel,
-            [
-              {
-                role:
-                  "system",
-                content:
-                  systemPrompt,
-              },
-
-              ...recentHistory,
-
-              {
-                role:
-                  "user",
-                content:
-                  userPrompt,
-              },
-            ],
-            this.makeChatOptions(),
-            {
-              onThinking:
-                (
-                  _delta,
-                  accumulated,
-                ) => {
-                  if (
-                    !thinkingStarted
-                  ) {
-                    thinkingStarted =
-                      true;
-
-                    callbacks
-                      ?.onStage?.(
-                        "thinking",
-                      );
-                  }
-
-                  callbacks
-                    ?.onThinking?.(
-                      accumulated,
-                    );
-                },
-
-              onContent:
-                (
-                  _delta,
-                  accumulated,
-                ) => {
-                  if (
-                    !answerStarted
-                  ) {
-                    answerStarted =
-                      true;
-
-                    callbacks
-                      ?.onStage?.(
-                        "answering",
-                      );
-                  }
-
-                  callbacks
-                    ?.onAnswer?.(
-                      accumulated,
-                    );
-                },
-            },
-            signal,
-          );
-
-      return {
-        answer:
-          response.content,
-
-        thinking:
-          response.thinking,
-
-        sources,
-      };
     } finally {
       await lease.release();
     }
   }
 
+  private async generateAnswer(
+    question: string,
+    history:
+      ConversationMessage[],
+    requestedSource:
+      ResolvedSource | null,
+    requestedSection:
+      string | null,
+    sources:
+      RetrievedChunk[],
+    callbacks?:
+      RagStreamCallbacks,
+    signal?: AbortSignal,
+  ): Promise<RagAnswer> {
+    const sourceContext =
+      this.buildSourceContext(
+        sources,
+      );
+
+    const systemPrompt =
+      this.makeSystemPrompt(
+        requestedSource,
+        requestedSection,
+      );
+
+    const recentHistory =
+      history
+        .slice(-4)
+        .map(
+          (message) => ({
+            role:
+              message.role,
+
+            content:
+              message.content,
+          }),
+        );
+
+    const userPrompt = [
+      "QUESTION",
+      "",
+      question,
+      "",
+      "REQUESTED SOURCE",
+      "",
+
+      requestedSource
+        ? [
+            `File: ${requestedSource.filePath}`,
+            `Title: ${requestedSource.title}`,
+            `Type: ${requestedSource.sourceType}`,
+
+            requestedSection
+              ? `Requested section: ${requestedSection}`
+              : "",
+
+            requestedSection
+              ? "The retrieval layer performed an exact section-metadata lookup."
+              : "Retrieval has been restricted to this source.",
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : "(No explicit source was resolved.)",
+
+      "",
+      "VAULT SOURCES",
+      "",
+      sourceContext ||
+        "(No vault sources were retrieved.)",
+    ].join("\n");
+
+    let thinkingStarted =
+      false;
+
+    let answerStarted =
+      false;
+
+    const response =
+      await this.ollama
+        .chatStreamWithThinking(
+          this.settings
+            .chatModel,
+
+          [
+            {
+              role:
+                "system",
+
+              content:
+                systemPrompt,
+            },
+
+            ...recentHistory,
+
+            {
+              role:
+                "user",
+
+              content:
+                userPrompt,
+            },
+          ],
+
+          this.makeChatOptions(),
+
+          {
+            onThinking:
+              (
+                _delta: string,
+                accumulated: string,
+              ) => {
+                if (
+                  !thinkingStarted
+                ) {
+                  thinkingStarted =
+                    true;
+
+                  callbacks
+                    ?.onStage?.(
+                      "thinking",
+                    );
+                }
+
+                callbacks
+                  ?.onThinking?.(
+                    accumulated,
+                  );
+              },
+
+            onContent:
+              (
+                _delta: string,
+                accumulated: string,
+              ) => {
+                if (
+                  !answerStarted
+                ) {
+                  answerStarted =
+                    true;
+
+                  callbacks
+                    ?.onStage?.(
+                      "answering",
+                    );
+                }
+
+                callbacks
+                  ?.onAnswer?.(
+                    accumulated,
+                  );
+              },
+          },
+
+          signal,
+        );
+
+    return {
+      answer:
+        response.content,
+
+      thinking:
+        response.thinking,
+
+      sources,
+    };
+  }
+
+  private reportRetrieval(
+    callbacks:
+      RagStreamCallbacks |
+      undefined,
+
+    data: {
+      mode:
+        RagRetrievalMode;
+
+      source:
+        ResolvedSource | null;
+
+      section?:
+        string;
+
+      sectionTitle?:
+        string;
+
+      sources:
+        RetrievedChunk[];
+    },
+  ): void {
+    const contextCharacters =
+      data.sources.reduce(
+        (
+          total,
+          source,
+        ) =>
+          total +
+          source.content
+            .length,
+        0,
+      );
+
+    callbacks
+      ?.onRetrievalInfo?.({
+        mode:
+          data.mode,
+
+        sourceFile:
+          data.source
+            ?.fileName,
+
+        sourceConfidence:
+          data.source
+            ?.confidence,
+
+        section:
+          data.section,
+
+        sectionTitle:
+          data.sectionTitle,
+
+        chunkCount:
+          data.sources.length,
+
+        contextCharacters,
+      });
+  }
+
   private applyContextBudget(
     sources:
       RetrievedChunk[],
-    requestedSection:
-      string | null,
+    maximumChunks:
+      number,
   ): RetrievedChunk[] {
-    const maximumChunks =
-      requestedSection
-        ? SECTION_CONTEXT_CHUNKS
-        : SOURCE_CONTEXT_CHUNKS;
-
     const selected:
       RetrievedChunk[] = [];
 
@@ -502,7 +636,8 @@ export class RagService {
       }
 
       const length =
-        source.content.length;
+        source.content
+          .length;
 
       if (
         selected.length > 0 &&
@@ -513,11 +648,6 @@ export class RagService {
         break;
       }
 
-      /*
-       * Always allow the top result, even if one
-       * unusually large chunk is slightly above the
-       * configured budget.
-       */
       selected.push(
         source,
       );
@@ -532,16 +662,6 @@ export class RagService {
   private extractSectionIdentifier(
     question: string,
   ): string | null {
-    /*
-     * Prioritize explicit phrases so a filename
-     * version such as "2.3.2" is NOT accidentally
-     * interpreted as the requested textbook section.
-     *
-     * Examples:
-     *   section 1.5
-     *   sec. 1.5
-     *   § 1.5
-     */
     const explicit =
       question.match(
         /\b(?:section|sec\.?)\s+(\d+(?:\.\d+){1,4})\b/i,
@@ -571,8 +691,24 @@ export class RagService {
             `File: ${source.filePath}`,
             `Type: ${source.sourceType}`,
             `Title: ${source.title}`,
-            `Section: ${source.heading}`,
+            `Heading: ${source.heading}`,
           ];
+
+          if (
+            source.sectionNumber
+          ) {
+            lines.push(
+              `Section number: ${source.sectionNumber}`,
+            );
+
+            if (
+              source.sectionTitle
+            ) {
+              lines.push(
+                `Section title: ${source.sectionTitle}`,
+              );
+            }
+          }
 
           if (
             source.sourceType ===
@@ -620,14 +756,6 @@ export class RagService {
         .chatModel
         .toLowerCase();
 
-    /*
-     * Ollama's Qwen3 thinking control is boolean.
-     * GPT-OSS specifically expects low/medium/high.
-     *
-     * The previous shared setting passed "low" to
-     * qwen3:8b because it originated as a GPT-OSS
-     * setting. Use the correct model-specific form.
-     */
     const think:
       OllamaChatOptions[
         "think"
@@ -637,10 +765,12 @@ export class RagService {
       )
         ? this.settings
             .chatReasoningEffort
+
         : model.includes(
               "qwen3",
             )
           ? true
+
           : this.settings
               .chatReasoningEffort;
 
@@ -692,7 +822,6 @@ export class RagService {
     if (section) {
       parts.push(
         `Requested section: ${section}`,
-        `Section ${section}`,
       );
     }
 
@@ -720,8 +849,9 @@ export class RagService {
 
     if (section) {
       sourceRules.push(
-        `- The user explicitly requested section ${section}. Focus the answer on that section.`,
-        "- Do not summarize unrelated chapters or sections unless needed to explain the requested material.",
+        `- The user explicitly requested section ${section}.`,
+        `- Every supplied chunk for this request was selected using exact section metadata for ${section}.`,
+        "- Focus the answer on that section and do not substitute unrelated pages.",
       );
     }
 
@@ -738,9 +868,9 @@ export class RagService {
         "- If the sources are insufficient, say that the indexed vault does not contain enough information.",
         "- Cite factual claims from the vault with [1], [2], etc.",
         "- Citation numbers correspond to SOURCE numbers in the current prompt.",
-        "- For PDF sources, use the supplied page information when it is helpful.",
+        "- For PDF sources, use the supplied section and page information when helpful.",
         "- Prefer the most directly relevant sources.",
-        "- Never invent a source, note, heading, page, or citation.",
+        "- Never invent a source, section, heading, page, or citation.",
         "- For simple factual questions, answer directly and concisely.",
         ...sourceRules,
       ].join("\n");
@@ -753,9 +883,9 @@ export class RagService {
       "- Use the supplied vault sources whenever they are relevant.",
       "- Cite vault-derived factual claims with [1], [2], etc.",
       "- Citation numbers correspond to SOURCE numbers in the current prompt.",
-      "- For PDF sources, use the supplied page information when it is helpful.",
+      "- For PDF sources, use the supplied section and page information when helpful.",
       "- If you add information that is not present in the vault, clearly identify it as general model knowledge.",
-      "- Never invent a vault source, note, heading, page, or citation.",
+      "- Never invent a vault source, section, heading, page, or citation.",
       "- For simple factual questions, answer directly and concisely.",
       ...sourceRules,
     ].join("\n");

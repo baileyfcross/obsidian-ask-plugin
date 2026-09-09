@@ -1,8 +1,8 @@
 {
-  "version": 4,
+  "version": 5,
   "embeddingModel": "embeddinggemma",
   "embeddingDimensions": 768,
-  "lastIndexedAt": "2026-09-09T05:10:13.074Z",
+  "lastIndexedAt": "2026-09-09T06:14:04.285Z",
   "documents": {
     "6 - Full Notes/C# Variable Declaration.md": {
       "hash": "0b8461bf8e89a5572a2d67cc1fe6fd1f8f00da4303e5385dd4c4f4eb93d3184f",
@@ -28,18 +28,6 @@
       "fileName": "C# Unary and Binary Operators.md",
       "title": "C# Unary and Binary Operators"
     },
-    "6 - Full Notes/C# Type Inference.md": {
-      "hash": "b1dbc22ef0282974681b8d1ee5236fe37d54668225e31d30164c6f50f723db5e",
-      "mtime": 1788918547972,
-      "chunkIds": [
-        "6 - Full Notes/C# Type Inference.md::0",
-        "6 - Full Notes/C# Type Inference.md::1",
-        "6 - Full Notes/C# Type Inference.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Type Inference.md",
-      "title": "C# Type Inference"
-    },
     "6 - Full Notes/C# Tuple Returns and Deconstruction.md": {
       "hash": "1fed514ae47c7ee7a814af60b11eae229651cff5a92d91471e498aa7cdf8a111",
       "mtime": 1788918546714,
@@ -51,6 +39,18 @@
       "sourceType": "markdown",
       "fileName": "C# Tuple Returns and Deconstruction.md",
       "title": "C# Tuple Returns and Deconstruction"
+    },
+    "6 - Full Notes/C# Type Inference.md": {
+      "hash": "b1dbc22ef0282974681b8d1ee5236fe37d54668225e31d30164c6f50f723db5e",
+      "mtime": 1788918547972,
+      "chunkIds": [
+        "6 - Full Notes/C# Type Inference.md::0",
+        "6 - Full Notes/C# Type Inference.md::1",
+        "6 - Full Notes/C# Type Inference.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Type Inference.md",
+      "title": "C# Type Inference"
     },
     "6 - Full Notes/C# Switch Expressions.md": {
       "hash": "fc1fab356ee2c16ac90a69acaf28bbbaaf460e152d8af17759f030277431f292",
@@ -220,18 +220,6 @@
       "fileName": "C# Method Overloading.md",
       "title": "C# Method Overloading"
     },
-    "6 - Full Notes/C# Iteration Statements.md": {
-      "hash": "0a33af5fbd0422211f0a131322423683e6b85712efb1263b73f67be1d2e0a5a2",
-      "mtime": 1788918532790,
-      "chunkIds": [
-        "6 - Full Notes/C# Iteration Statements.md::0",
-        "6 - Full Notes/C# Iteration Statements.md::1",
-        "6 - Full Notes/C# Iteration Statements.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Iteration Statements.md",
-      "title": "C# Iteration Statements"
-    },
     "6 - Full Notes/C# Language Version.md": {
       "hash": "db2555dcdf5c084cd8b5038cc48bf48c00df3991503a9b9b69766f1b4eb17c6e",
       "mtime": 1788918540383,
@@ -243,6 +231,18 @@
       "sourceType": "markdown",
       "fileName": "C# Language Version.md",
       "title": "C# Language Version"
+    },
+    "6 - Full Notes/C# Iteration Statements.md": {
+      "hash": "0a33af5fbd0422211f0a131322423683e6b85712efb1263b73f67be1d2e0a5a2",
+      "mtime": 1788918532790,
+      "chunkIds": [
+        "6 - Full Notes/C# Iteration Statements.md::0",
+        "6 - Full Notes/C# Iteration Statements.md::1",
+        "6 - Full Notes/C# Iteration Statements.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Iteration Statements.md",
+      "title": "C# Iteration Statements"
     },
     "6 - Full Notes/C# Interface Implementation.md": {
       "hash": "cdce5d47d648e8f784a2741db93ad3558ec33fb99e3e4f28790310902bbf6836",
@@ -292,18 +292,6 @@
       "fileName": "C# Function Parameters.md",
       "title": "C# Function Parameters"
     },
-    "6 - Full Notes/C# Events.md": {
-      "hash": "e7163e0b993900e5cedc21543715afa3cbffcc471d677a763846c2817ae78595",
-      "mtime": 1788918516404,
-      "chunkIds": [
-        "6 - Full Notes/C# Events.md::0",
-        "6 - Full Notes/C# Events.md::1",
-        "6 - Full Notes/C# Events.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Events.md",
-      "title": "C# Events"
-    },
     "6 - Full Notes/C# Fields and Access Modifiers.md": {
       "hash": "5f61d6ae3b8967fb1881dcd264247d0b320fa371dfc1035a5b7e0a5a27f40232",
       "mtime": 1788918525239,
@@ -327,6 +315,18 @@
       "sourceType": "markdown",
       "fileName": "C# Extension Methods.md",
       "title": "C# Extension Methods"
+    },
+    "6 - Full Notes/C# Events.md": {
+      "hash": "e7163e0b993900e5cedc21543715afa3cbffcc471d677a763846c2817ae78595",
+      "mtime": 1788918516404,
+      "chunkIds": [
+        "6 - Full Notes/C# Events.md::0",
+        "6 - Full Notes/C# Events.md::1",
+        "6 - Full Notes/C# Events.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Events.md",
+      "title": "C# Events"
     },
     "6 - Full Notes/C# Enum Types.md": {
       "hash": "af51dcd2ee5f5519afe0ca15dbf0f835560a2fb28627f37156c2a2114f87e52b",
@@ -496,6 +496,18 @@
       "fileName": "Algorithm Effectiveness.md",
       "title": "Algorithm Effectiveness"
     },
+    "6 - Full Notes/Algebraic Identity.md": {
+      "hash": "026a8c2be8dbaa106c6ecac69af61f295fe63f85b87d064944b200d89a69c72f",
+      "mtime": 1788666720624,
+      "chunkIds": [
+        "6 - Full Notes/Algebraic Identity.md::0",
+        "6 - Full Notes/Algebraic Identity.md::1",
+        "6 - Full Notes/Algebraic Identity.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "Algebraic Identity.md",
+      "title": "Algebraic Identity"
+    },
     "6 - Full Notes/Algebraic Word Problem.md": {
       "hash": "53a48a7d03ba4adf2758021a3e0189c8ea803449598c7c8470424d35d595ac8d",
       "mtime": 1788666735774,
@@ -531,18 +543,6 @@
       "sourceType": "markdown",
       "fileName": "Algebraic Simplification.md",
       "title": "Algebraic Simplification"
-    },
-    "6 - Full Notes/Algebraic Identity.md": {
-      "hash": "026a8c2be8dbaa106c6ecac69af61f295fe63f85b87d064944b200d89a69c72f",
-      "mtime": 1788666720624,
-      "chunkIds": [
-        "6 - Full Notes/Algebraic Identity.md::0",
-        "6 - Full Notes/Algebraic Identity.md::1",
-        "6 - Full Notes/Algebraic Identity.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "Algebraic Identity.md",
-      "title": "Algebraic Identity"
     },
     "2 - Source Material/FoundationsOfComputation_2.3.2.pdf": {
       "hash": "27453bc1e93a9e596dc2fc4dfd7a840fe76f7af0bb0fcf021f3b45960e164975",
@@ -1019,41 +1019,7 @@
         "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::468",
         "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::469",
         "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::470",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::471",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::472",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::473",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::474",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::475",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::476",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::477",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::478",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::479",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::480",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::481",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::482",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::483",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::484",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::485",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::486",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::487",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::488",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::489",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::490",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::491",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::492",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::493",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::494",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::495",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::496",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::497",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::498",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::499",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::500",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::501",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::502",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::503",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::504",
-        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::505"
+        "2 - Source Material/FoundationsOfComputation_2.3.2.pdf::471"
       ],
       "sourceType": "pdf",
       "fileName": "FoundationsOfComputation_2.3.2.pdf",

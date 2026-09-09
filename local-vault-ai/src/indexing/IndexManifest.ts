@@ -5,7 +5,7 @@ import {
   SourceType,
 } from "../types";
 
-export const INDEX_VERSION = 4;
+export const INDEX_VERSION = 5;
 
 export interface IndexedDocument {
   hash: string;
@@ -27,6 +27,7 @@ export interface IndexManifest {
   embeddingModel: string;
   embeddingDimensions: number;
   lastIndexedAt: string;
+
   documents:
     Record<
       string,
@@ -41,11 +42,14 @@ export function createEmptyManifest(
   return {
     version:
       INDEX_VERSION,
+
     embeddingModel,
     embeddingDimensions,
+
     lastIndexedAt:
       new Date()
         .toISOString(),
+
     documents: {},
   };
 }

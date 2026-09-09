@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "81ad01c0792133b2",
+        "id": "8c3c6efdb1dcd937",
         "type": "tabs",
         "children": [
           {
-            "id": "e100aee986a9efb9",
+            "id": "b784508de2883ec8",
             "type": "leaf",
             "state": {
               "type": "pdf",
@@ -196,7 +196,7 @@
       "local-vault-ai:Open Local Vault AI": false
     }
   },
-  "active": "e100aee986a9efb9",
+  "active": "eb47141dbe3a7b8e",
   "lastOpenFiles": [
     "6 - Full Notes/Algebraic Identity.md",
     "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",

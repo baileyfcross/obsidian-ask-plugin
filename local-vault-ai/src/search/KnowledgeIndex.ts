@@ -14,6 +14,11 @@ import {
   SourceType,
   VaultChunk,
 } from "../types";
+import {
+  buildSourceSearchTerms,
+  scoreSourceCandidate,
+  SourceCandidateDescriptor,
+} from "../retrieval/SourceResolver";
 
 export interface HybridSearchOptions {
   limit: number;
@@ -36,12 +41,11 @@ export interface ResolvedSource {
   confidence: number;
 }
 
-interface SourceCandidate {
-  filePath: string;
-  fileName: string;
-  title: string;
-  sourceType: SourceType;
-}
+const SOURCE_MATCH_THRESHOLD =
+  70;
+
+const SOURCE_MATCH_MARGIN =
+  4;
 
 export class KnowledgeIndex {
   private db:
@@ -73,35 +77,70 @@ export class KnowledgeIndex {
     this.db = create({
       id:
         "local-vault-ai",
+
       schema: {
         id: "string",
 
         /*
-         * sourceKey/sourceType are enums because
-         * Orama can efficiently apply exact filters
-         * to enum properties.
+         * Enum fields support exact filters.
          */
-        sourceKey: "enum",
-        sourceType: "enum",
+        sourceKey:
+          "enum",
 
-        filePath: "string",
-        fileName: "string",
-        folder: "string",
-        title: "string",
-        heading: "string",
-        content: "string",
+        sourceType:
+          "enum",
 
-        tags: "string[]",
-        links: "string[]",
+        sectionKey:
+          "enum",
+
+        /*
+         * Normalized source-name text used only for
+         * source resolution.
+         */
+        sourceSearchName:
+          "string",
+
+        filePath:
+          "string",
+
+        fileName:
+          "string",
+
+        folder:
+          "string",
+
+        title:
+          "string",
+
+        heading:
+          "string",
+
+        sectionNumber:
+          "string",
+
+        sectionTitle:
+          "string",
+
+        content:
+          "string",
+
+        tags:
+          "string[]",
+
+        links:
+          "string[]",
+
         properties:
           "string[]",
 
         pageStart:
           "number",
+
         pageEnd:
           "number",
 
-        mtime: "number",
+        mtime:
+          "number",
 
         embedding:
           `vector[${dimensions}]`,
@@ -211,15 +250,23 @@ export class KnowledgeIndex {
     this.assertReady();
 
     const request:
-      Record<string, unknown> = {
+      Record<
+        string,
+        unknown
+      > = {
         mode: "hybrid",
-        term: query,
+
+        term:
+          query,
 
         properties: [
+          "sourceSearchName",
           "filePath",
           "fileName",
           "title",
           "heading",
+          "sectionNumber",
+          "sectionTitle",
           "content",
           "tags",
           "links",
@@ -229,6 +276,7 @@ export class KnowledgeIndex {
         vector: {
           value:
             queryEmbedding,
+
           property:
             "embedding",
         },
@@ -236,6 +284,7 @@ export class KnowledgeIndex {
         hybridWeights: {
           text:
             options.textWeight,
+
           vector:
             options.vectorWeight,
         },
@@ -254,8 +303,10 @@ export class KnowledgeIndex {
       options.sourcePath
     ) {
       request.where = {
-        sourceKey:
-          options.sourcePath,
+        sourceKey: {
+          eq:
+            options.sourcePath,
+        },
       };
     }
 
@@ -266,124 +317,164 @@ export class KnowledgeIndex {
       );
 
     return (
-      results.hits ?? []
+      results.hits ??
+      []
     ).map(
       (
         hit: any,
-      ): RetrievedChunk => {
-        const document =
-          hit.document;
-
-        return {
-          id:
-            document.id,
-
-          sourceType:
-            toSourceType(
-              document
-                .sourceType,
-            ),
-
-          filePath:
-            document.filePath,
-
-          fileName:
-            document.fileName,
-
-          title:
-            document.title,
-
-          heading:
-            document.heading,
-
-          content:
-            document.content,
-
-          tags:
-            document.tags ??
-            [],
-
-          links:
-            document.links ??
-            [],
-
-          pageStart:
-            document.pageStart ??
+      ) =>
+        this.toRetrievedChunk(
+          hit.document,
+          Number(
+            hit.score ??
             0,
-
-          pageEnd:
-            document.pageEnd ??
-            0,
-
-          score:
-            hit.score,
-        };
-      },
+          ),
+        ),
     );
   }
 
-
   /**
-   * Fast lexical lookup for an explicitly requested
-   * section inside one already-resolved source.
+   * Exact metadata lookup for a numbered section.
    *
-   * This intentionally avoids generating an embedding.
-   * For questions such as "section 1.5", the printed
-   * section number is a stronger signal than semantic
-   * similarity and is much cheaper to retrieve.
+   * This does NOT search arbitrary occurrences of
+   * "1.5" in figures, tables, equations, indexes,
+   * or the table of contents.
    */
-  async searchSectionInSource(
+  async searchExactSection(
     sourcePath: string,
-    sectionIdentifier: string,
-    limit = 6,
+    sectionNumber: string,
+    limit = 12,
   ): Promise<RetrievedChunk[]> {
     this.assertReady();
 
-    const searchTerms = [
-      sectionIdentifier,
-      `section ${sectionIdentifier}`,
-    ];
+    const normalizedSection =
+      normalizeSectionNumber(
+        sectionNumber,
+      );
+
+    const results =
+      await search(
+        this.db,
+        {
+          term:
+            normalizedSection,
+
+          properties: [
+            "sectionNumber",
+            "sectionTitle",
+            "heading",
+            "content",
+          ],
+
+          where: {
+            sourceKey: {
+              eq:
+                sourcePath,
+            },
+
+            sectionKey: {
+              eq:
+                normalizedSection,
+            },
+          },
+
+          /*
+           * Pull more than the final RAG budget, then
+           * restore document order by page/chunk id.
+           */
+          limit:
+            Math.max(
+              limit,
+              24,
+            ),
+
+          includeVectors:
+            false,
+        } as any,
+      );
+
+    return (
+      results.hits ??
+      []
+    )
+      .map(
+        (
+          hit: any,
+        ) =>
+          this.toRetrievedChunk(
+            hit.document,
+            Number(
+              hit.score ??
+              0,
+            ),
+          ),
+      )
+      .filter(
+        (
+          chunk:
+            RetrievedChunk,
+        ) =>
+          chunk
+            .sectionNumber ===
+          normalizedSection,
+      )
+      .sort(
+        compareDocumentOrder,
+      )
+      .slice(
+        0,
+        limit,
+      );
+  }
+
+  /**
+   * Resolve the source named in a natural-language
+   * question.
+   *
+   * Candidate discovery is performed against the
+   * normalized sourceSearchName field added during
+   * indexing, so CamelCase filenames are searchable.
+   */
+  async resolveSourceReference(
+    question: string,
+  ): Promise<ResolvedSource | null> {
+    this.assertReady();
+
+    const terms =
+      buildSourceSearchTerms(
+        question,
+      );
+
+    if (
+      terms.length === 0
+    ) {
+      return null;
+    }
 
     const candidates =
       new Map<
         string,
-        {
-          chunk:
-            RetrievedChunk;
-          rawScore: number;
-        }
+        SourceCandidateDescriptor
       >();
 
     for (
       const term of
-      searchTerms
+      terms
     ) {
-      const results =
+      const result =
         await search(
           this.db,
           {
             term,
 
             properties: [
-              "heading",
-              "content",
+              "sourceSearchName",
+              "title",
+              "fileName",
+              "filePath",
             ],
 
-            where: {
-              sourceKey:
-                sourcePath,
-            },
-
-            /*
-             * Pull a wider lexical candidate set,
-             * then rank exact section headings
-             * ourselves.
-             */
-            limit:
-              Math.max(
-                40,
-                limit * 6,
-              ),
+            limit: 80,
 
             includeVectors:
               false,
@@ -392,174 +483,75 @@ export class KnowledgeIndex {
 
       for (
         const hit of
-        results.hits ?? []
+        result.hits ??
+        []
       ) {
         const document =
           (hit as any)
             .document;
 
-        const id =
+        const filePath =
           String(
-            document.id,
+            document.filePath ??
+            "",
           );
 
-        const chunk:
-          RetrievedChunk = {
-            id,
+        if (
+          !filePath ||
+          candidates.has(
+            filePath,
+          )
+        ) {
+          continue;
+        }
+
+        candidates.set(
+          filePath,
+          {
+            filePath,
+
+            fileName:
+              String(
+                document.fileName ??
+                filePath,
+              ),
+
+            title:
+              String(
+                document.title ??
+                document.fileName ??
+                filePath,
+              ),
 
             sourceType:
               toSourceType(
                 document
                   .sourceType,
               ),
-
-            filePath:
-              String(
-                document
-                  .filePath,
-              ),
-
-            fileName:
-              String(
-                document
-                  .fileName,
-              ),
-
-            title:
-              String(
-                document
-                  .title,
-              ),
-
-            heading:
-              String(
-                document
-                  .heading ??
-                  "",
-              ),
-
-            content:
-              String(
-                document
-                  .content ??
-                  "",
-              ),
-
-            tags:
-              document.tags ??
-              [],
-
-            links:
-              document.links ??
-              [],
-
-            pageStart:
-              Number(
-                document
-                  .pageStart ??
-                  0,
-              ),
-
-            pageEnd:
-              Number(
-                document
-                  .pageEnd ??
-                  0,
-              ),
-
-            score:
-              Number(
-                (hit as any)
-                  .score ??
-                  0,
-              ),
-          };
-
-        const existing =
-          candidates.get(id);
-
-        const rawScore =
-          Math.max(
-            existing?.rawScore ??
-              0,
-            chunk.score,
-          );
-
-        candidates.set(
-          id,
-          {
-            chunk,
-            rawScore,
           },
         );
       }
     }
 
-    const escaped =
-      escapeRegExp(
-        sectionIdentifier,
-      );
-
-    const headingPattern =
-      new RegExp(
-        `^\\s*(?:section\\s+)?${escaped}(?:\\D|$)`,
-        "i",
-      );
-
-    const inlinePattern =
-      new RegExp(
-        `(?:^|\\n)\\s*(?:section\\s+)?${escaped}(?:\\D|$)`,
-        "i",
-      );
-
-    const ranked =
+    const scored =
       Array.from(
         candidates.values(),
       )
         .map(
-          ({
-            chunk,
-            rawScore,
-          }) => {
-            let sectionBoost =
-              0;
+          (candidate) => ({
+            candidate,
 
-            if (
-              headingPattern.test(
-                chunk.heading,
-              )
-            ) {
-              sectionBoost +=
-                1000;
-            }
-
-            if (
-              inlinePattern.test(
-                chunk.content,
-              )
-            ) {
-              sectionBoost +=
-                350;
-            }
-
-            /*
-             * PdfChunker keeps the current section
-             * heading on later chunks from the same
-             * section, so all chunks belonging to
-             * section 1.5 naturally stay together.
-             */
-            return {
-              chunk,
-              score:
-                sectionBoost +
-                rawScore,
-            };
-          },
+            score:
+              scoreSourceCandidate(
+                question,
+                candidate,
+              ),
+          }),
         )
         .filter(
           (item) =>
-            item.score >
-            0,
+            item.score >=
+            SOURCE_MATCH_THRESHOLD,
         )
         .sort(
           (a, b) =>
@@ -567,163 +559,121 @@ export class KnowledgeIndex {
             a.score,
         );
 
-    return ranked
-      .slice(
-        0,
-        limit,
-      )
-      .map(
-        (item) => ({
-          ...item.chunk,
+    const best =
+      scored[0];
 
-          /*
-           * Keep the original Orama score visible
-           * to citations / diagnostics.
-           */
-          score:
-            item.chunk
-              .score,
-        }),
-      );
+    if (!best) {
+      return null;
+    }
+
+    const second =
+      scored[1];
+
+    if (
+      second &&
+      best.score -
+        second.score <
+        SOURCE_MATCH_MARGIN
+    ) {
+      /*
+       * Do not silently pick between two similarly
+       * named books/notes.
+       */
+      return null;
+    }
+
+    return {
+      ...best.candidate,
+
+      confidence:
+        Math.round(
+          best.score,
+        ),
+    };
   }
 
-  /**
-   * Detect an explicitly named note/book/file in the
-   * user's question before normal RAG retrieval.
-   *
-   * This is deliberately conservative: it only
-   * returns a match when the filename/title evidence
-   * is strong enough to justify restricting search
-   * to a single source.
-   */
-  async resolveSourceReference(
-    question: string,
-  ): Promise<ResolvedSource | null> {
-    this.assertReady();
+  private toRetrievedChunk(
+    document: any,
+    score: number,
+  ): RetrievedChunk {
+    return {
+      id:
+        String(
+          document.id,
+        ),
 
-    const normalizedQuestion =
-      normalizeSourceText(
-        question,
-      );
+      sourceType:
+        toSourceType(
+          document
+            .sourceType,
+        ),
 
-    if (
-      normalizedQuestion.length <
-      4
-    ) {
-      return null;
-    }
+      filePath:
+        String(
+          document.filePath ??
+          "",
+        ),
 
-    const result =
-      await search(
-        this.db,
-        {
-          term: question,
-          properties: [
-            "fileName",
-            "title",
-            "filePath",
-          ],
-          limit: 80,
-          includeVectors:
-            false,
-        } as any,
-      );
+      fileName:
+        String(
+          document.fileName ??
+          "",
+        ),
 
-    const candidates =
-      new Map<
-        string,
-        SourceCandidate
-      >();
+      title:
+        String(
+          document.title ??
+          "",
+        ),
 
-    for (
-      const hit of
-      result.hits ?? []
-    ) {
-      const document =
-        (hit as any)
-          .document;
+      heading:
+        String(
+          document.heading ??
+          "",
+        ),
 
-      const filePath =
-        document.filePath;
+      sectionNumber:
+        String(
+          document
+            .sectionNumber ??
+          "",
+        ),
 
-      if (
-        typeof filePath !==
-          "string" ||
-        candidates.has(
-          filePath,
-        )
-      ) {
-        continue;
-      }
+      sectionTitle:
+        String(
+          document
+            .sectionTitle ??
+          "",
+        ),
 
-      candidates.set(
-        filePath,
-        {
-          filePath,
-          fileName:
-            String(
-              document.fileName ??
-              filePath,
-            ),
-          title:
-            String(
-              document.title ??
-              document.fileName ??
-              filePath,
-            ),
-          sourceType:
-            toSourceType(
-              document
-                .sourceType,
-            ),
-        },
-      );
-    }
+      content:
+        String(
+          document.content ??
+          "",
+        ),
 
-    let best:
-      | ResolvedSource
-      | null = null;
+      tags:
+        document.tags ??
+        [],
 
-    for (
-      const candidate of
-      candidates.values()
-    ) {
-      const confidence =
-        scoreCandidate(
-          normalizedQuestion,
-          candidate,
-        );
+      links:
+        document.links ??
+        [],
 
-      if (
-        !best ||
-        confidence >
-          best.confidence
-      ) {
-        best = {
-          ...candidate,
-          confidence,
-        };
-      }
-    }
+      pageStart:
+        Number(
+          document.pageStart ??
+          0,
+        ),
 
-    /*
-     * 86 is high enough to require a strong
-     * filename/title match, while still allowing:
-     *
-     * requested:
-     * FoundationsOfComputation_2.3.2
-     *
-     * indexed:
-     * FoundationsOfComputation_2.3.2_8.5x11.pdf
-     */
-    if (
-      !best ||
-      best.confidence < 86
-    ) {
-      return null;
-    }
+      pageEnd:
+        Number(
+          document.pageEnd ??
+          0,
+        ),
 
-    return best;
+      score,
+    };
   }
 
   private assertReady(): void {
@@ -735,183 +685,65 @@ export class KnowledgeIndex {
   }
 }
 
-function scoreCandidate(
-  normalizedQuestion: string,
-  candidate:
-    SourceCandidate,
-): number {
-  const names = [
-    candidate.fileName,
-    candidate.title,
-    candidate.filePath
-      .split("/")
-      .pop() ??
-      candidate.filePath,
-  ];
-
-  let best = 0;
-
-  for (const name of names) {
-    const normalizedName =
-      normalizeSourceText(
-        stripKnownExtension(
-          name,
-        ),
-      );
-
-    if (
-      normalizedName.length <
-      4
-    ) {
-      continue;
-    }
-
-    if (
-      normalizedQuestion.includes(
-        normalizedName,
-      )
-    ) {
-      best =
-        Math.max(
-          best,
-          120,
-        );
-
-      continue;
-    }
-
-    const tokens =
-      normalizedName
-        .split(" ")
-        .filter(Boolean);
-
-    /*
-     * Walk backwards through filename prefixes.
-     * This handles extra suffixes such as:
-     *   _8.5x11
-     *   _final
-     *   _scan
-     */
-    for (
-      let end =
-        tokens.length - 1;
-      end >= 1;
-      end -= 1
-    ) {
-      const prefix =
-        tokens
-          .slice(0, end)
-          .join(" ");
-
-      if (
-        prefix.length <
-        8
-      ) {
-        continue;
-      }
-
-      if (
-        normalizedQuestion
-          .includes(prefix)
-      ) {
-        const coverage =
-          end /
-          tokens.length;
-
-        best =
-          Math.max(
-            best,
-            92 +
-              coverage *
-                18,
-          );
-
-        break;
-      }
-    }
-
-    const queryTokens =
-      new Set(
-        normalizedQuestion
-          .split(" ")
-          .filter(
-            (token) =>
-              token.length >=
-              2,
-          ),
-      );
-
-    const sourceTokens =
-      tokens.filter(
-        (token) =>
-          token.length >= 2,
-      );
-
-    if (
-      sourceTokens.length >
-      0
-    ) {
-      const matches =
-        sourceTokens.filter(
-          (token) =>
-            queryTokens.has(
-              token,
-            ),
-        ).length;
-
-      const overlap =
-        matches /
-        sourceTokens.length;
-
-      best =
-        Math.max(
-          best,
-          overlap * 82,
-        );
-    }
-  }
-
-  return best;
-}
-
-function normalizeSourceText(
+function normalizeSectionNumber(
   value: string,
 ): string {
   return value
-    .normalize("NFKD")
-    .toLowerCase()
-    .replace(
-      /[_\\/\-]+/g,
-      " ",
-    )
-    .replace(
-      /[^\p{L}\p{N}.]+/gu,
-      " ",
-    )
     .replace(
       /\s+/g,
-      " ",
+      "",
     )
-    .trim();
+    .replace(
+      /\.$/,
+      "",
+    );
 }
 
-function stripKnownExtension(
-  value: string,
-): string {
-  return value.replace(
-    /\.(?:md|pdf)$/i,
-    "",
+function compareDocumentOrder(
+  left:
+    RetrievedChunk,
+  right:
+    RetrievedChunk,
+): number {
+  if (
+    left.pageStart !==
+    right.pageStart
+  ) {
+    return (
+      left.pageStart -
+      right.pageStart
+    );
+  }
+
+  const leftIndex =
+    chunkIndexFromId(
+      left.id,
+    );
+
+  const rightIndex =
+    chunkIndexFromId(
+      right.id,
+    );
+
+  return (
+    leftIndex -
+    rightIndex
   );
 }
 
+function chunkIndexFromId(
+  id: string,
+): number {
+  const match =
+    id.match(
+      /::(\d+)$/,
+    );
 
-function escapeRegExp(
-  value: string,
-): string {
-  return value.replace(
-    /[.*+?^${}()|[\]\\]/g,
-    "\\$&",
-  );
+  return match?.[1]
+    ? Number(
+        match[1],
+      )
+    : 0;
 }
 
 function toSourceType(

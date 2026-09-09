@@ -10,6 +10,10 @@ import {
   OllamaClient,
 } from "../ollama/OllamaClient";
 import {
+  ModelRuntimeManager,
+  ModelUnloadPendingError,
+} from "../ollama/ModelRuntimeManager";
+import {
   KnowledgeIndex,
 } from "../search/KnowledgeIndex";
 import {
@@ -17,6 +21,9 @@ import {
   SourceType,
   VaultChunk,
 } from "../types";
+import {
+  normalizeSourceName,
+} from "../retrieval/SourceResolver";
 import {
   chunkMarkdown,
 } from "./Chunker";
@@ -45,9 +52,13 @@ import {
 
 const EMBEDDING_BATCH_SIZE = 24;
 const PERSIST_DEBOUNCE_MS = 2200;
+const NO_SECTION_KEY =
+  "__none__";
 
 interface PreparedChunk {
   heading: string;
+  sectionNumber: string;
+  sectionTitle: string;
   content: string;
   index: number;
   pageStart: number;
@@ -64,6 +75,28 @@ interface SourceInfo {
 }
 
 export class IndexManager {
+  private readonly app:
+    App;
+
+  private readonly settings:
+    LocalVaultAISettings;
+
+  private readonly ollama:
+    OllamaClient;
+
+  private readonly knowledgeIndex:
+    KnowledgeIndex;
+
+  private readonly manifestPath:
+    string;
+
+  /*
+   * Optional for backward compatibility with the
+   * pre-runtime-lease IndexManager constructor.
+   */
+  private readonly modelRuntime:
+    ModelRuntimeManager | null;
+
   private manifest:
     IndexManifest | null =
     null;
@@ -100,18 +133,86 @@ export class IndexManager {
     Promise<void> | null =
     null;
 
+  /*
+   * Constructor form used by the original PDF patch.
+   */
   constructor(
-    private readonly app:
-      App,
-    private readonly settings:
+    app: App,
+    settings:
       LocalVaultAISettings,
-    private readonly ollama:
+    ollama:
       OllamaClient,
-    private readonly knowledgeIndex:
+    knowledgeIndex:
       KnowledgeIndex,
-    private readonly manifestPath:
+    manifestPath:
       string,
-  ) {}
+  );
+
+  /*
+   * Constructor form used when the safe model-runtime
+   * lease has also been wired into indexing.
+   */
+  constructor(
+    app: App,
+    settings:
+      LocalVaultAISettings,
+    ollama:
+      OllamaClient,
+    modelRuntime:
+      ModelRuntimeManager,
+    knowledgeIndex:
+      KnowledgeIndex,
+    manifestPath:
+      string,
+  );
+
+  constructor(
+    app: App,
+    settings:
+      LocalVaultAISettings,
+    ollama:
+      OllamaClient,
+    fourth:
+      | KnowledgeIndex
+      | ModelRuntimeManager,
+    fifth:
+      | KnowledgeIndex
+      | string,
+    sixth?:
+      string,
+  ) {
+    this.app = app;
+    this.settings =
+      settings;
+    this.ollama =
+      ollama;
+
+    if (
+      typeof sixth ===
+      "string"
+    ) {
+      this.modelRuntime =
+        fourth as
+          ModelRuntimeManager;
+
+      this.knowledgeIndex =
+        fifth as
+          KnowledgeIndex;
+
+      this.manifestPath =
+        sixth;
+    } else {
+      this.modelRuntime =
+        null;
+
+      this.knowledgeIndex =
+        fourth as
+          KnowledgeIndex;
+
+      this.manifestPath =
+        fifth as string;
+    }
+  }
 
   async initialize():
     Promise<void> {
@@ -139,7 +240,7 @@ export class IndexManager {
       ) {
         this.setStatus(
           "needs-rebuild",
-          "The index format changed to add PDF sources. Rebuild the index.",
+          "The index format changed to add exact PDF section metadata and source-name resolution. Rebuild the index.",
         );
 
         return;
@@ -255,12 +356,38 @@ export class IndexManager {
       );
     }
 
-    this.setStatus(
-      "indexing",
-      "Checking Ollama...",
-    );
+    let lease:
+      ReturnType<
+        ModelRuntimeManager[
+          "acquireJob"
+        ]
+      > | null = null;
 
     try {
+      if (
+        this.modelRuntime
+      ) {
+        lease =
+          this.modelRuntime
+            .acquireJob({
+              kind:
+                "index-rebuild",
+
+              label:
+                "Rebuilding knowledge index",
+
+              models: [
+                this.settings
+                  .embeddingModel,
+              ],
+            });
+      }
+
+      this.setStatus(
+        "indexing",
+        "Checking Ollama...",
+      );
+
       await this
         .validateOllamaForIndexing();
 
@@ -305,7 +432,9 @@ export class IndexManager {
         fileIndex += 1
       ) {
         const file =
-          files[fileIndex];
+          files[
+            fileIndex
+          ];
 
         if (!file) {
           continue;
@@ -364,14 +493,28 @@ export class IndexManager {
         `Indexed ${markdownCount} Markdown file(s) and ${pdfCount} PDF file(s).${skippedText}`,
       );
     } catch (error) {
-      this.setStatus(
-        "error",
-        this.errorText(
-          error,
-        ),
-      );
+      if (
+        error instanceof
+        ModelUnloadPendingError
+      ) {
+        this.setStatus(
+          "needs-rebuild",
+          error.message,
+        );
+      } else {
+        this.setStatus(
+          "error",
+          this.errorText(
+            error,
+          ),
+        );
+      }
 
       throw error;
+    } finally {
+      if (lease) {
+        await lease.release();
+      }
     }
   }
 
@@ -522,7 +665,33 @@ export class IndexManager {
       return;
     }
 
+    let lease:
+      ReturnType<
+        ModelRuntimeManager[
+          "acquireJob"
+        ]
+      > | null = null;
+
     try {
+      if (
+        this.modelRuntime
+      ) {
+        lease =
+          this.modelRuntime
+            .acquireJob({
+              kind:
+                "index-update",
+
+              label:
+                `Indexing ${file.path}`,
+
+              models: [
+                this.settings
+                  .embeddingModel,
+              ],
+            });
+      }
+
       await this
         .validateOllamaForIndexing();
 
@@ -543,13 +712,22 @@ export class IndexManager {
           `[Local Vault AI] ${error.message}`,
         );
 
-        /*
-         * A scanned PDF should not poison the whole
-         * search index. Keep the index ready.
-         */
         this.setStatus(
           "ready",
           error.message,
+        );
+
+        return;
+      }
+
+      if (
+        error instanceof
+        ModelUnloadPendingError
+      ) {
+        this.setStatus(
+          "needs-rebuild",
+          `Index update deferred for ${file.path} because the embedding model is unloading. ` +
+            "Rebuild the index later or edit the source again after the model is available.",
         );
 
         return;
@@ -559,6 +737,10 @@ export class IndexManager {
         "error",
         `Could not index ${file.path}: ${this.errorText(error)}`,
       );
+    } finally {
+      if (lease) {
+        await lease.release();
+      }
     }
   }
 
@@ -749,10 +931,19 @@ export class IndexManager {
         (chunk) => ({
           heading:
             chunk.heading,
+
+          sectionNumber:
+            "",
+
+          sectionTitle:
+            "",
+
           content:
             chunk.content,
+
           index:
             chunk.index,
+
           pageStart: 0,
           pageEnd: 0,
         }),
@@ -766,12 +957,16 @@ export class IndexManager {
         {
           sourceType:
             "markdown",
+
           title:
             file.basename,
+
           tags:
             metadata.tags,
+
           links:
             metadata.links,
+
           properties:
             metadata.properties,
         },
@@ -848,12 +1043,22 @@ export class IndexManager {
         (chunk) => ({
           heading:
             chunk.heading,
+
+          sectionNumber:
+            chunk.sectionNumber,
+
+          sectionTitle:
+            chunk.sectionTitle,
+
           content:
             chunk.content,
+
           index:
             chunk.index,
+
           pageStart:
             chunk.pageStart,
+
           pageEnd:
             chunk.pageEnd,
         }),
@@ -885,8 +1090,10 @@ export class IndexManager {
   private async replaceDocumentChunks(
     file: TFile,
     fileHash: string,
-    chunks: PreparedChunk[],
-    source: SourceInfo,
+    chunks:
+      PreparedChunk[],
+    source:
+      SourceInfo,
   ): Promise<void> {
     if (!this.manifest) {
       throw new Error(
@@ -910,6 +1117,19 @@ export class IndexManager {
 
     const chunkIds:
       string[] = [];
+
+    const sourceSearchName =
+      [
+        normalizeSourceName(
+          file.basename,
+        ),
+
+        normalizeSourceName(
+          source.title,
+        ),
+      ]
+        .filter(Boolean)
+        .join(" ");
 
     for (
       let offset = 0;
@@ -999,6 +1219,12 @@ export class IndexManager {
             sourceType:
               source.sourceType,
 
+            sourceSearchName,
+
+            sectionKey:
+              chunk.sectionNumber ||
+              NO_SECTION_KEY,
+
             filePath:
               file.path,
 
@@ -1012,6 +1238,12 @@ export class IndexManager {
 
             heading:
               chunk.heading,
+
+            sectionNumber:
+              chunk.sectionNumber,
+
+            sectionTitle:
+              chunk.sectionTitle,
 
             content:
               chunk.content,
@@ -1212,15 +1444,32 @@ export class IndexManager {
   private embeddingText(
     file: TFile,
     source: SourceInfo,
-    chunk: PreparedChunk,
+    chunk:
+      PreparedChunk,
   ): string {
     const lines = [
       `Document: ${source.title}`,
       `File: ${file.name}`,
       `Path: ${file.path}`,
       `Source type: ${source.sourceType}`,
-      `Section: ${chunk.heading}`,
+      `Heading: ${chunk.heading}`,
     ];
+
+    if (
+      chunk.sectionNumber
+    ) {
+      lines.push(
+        `Section number: ${chunk.sectionNumber}`,
+      );
+
+      if (
+        chunk.sectionTitle
+      ) {
+        lines.push(
+          `Section title: ${chunk.sectionTitle}`,
+        );
+      }
+    }
 
     if (
       source.sourceType ===

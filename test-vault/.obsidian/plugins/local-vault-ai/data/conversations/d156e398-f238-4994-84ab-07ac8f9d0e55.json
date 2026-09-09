@@ -1,0 +1,89 @@
+{
+  "id": "d156e398-f238-4994-84ab-07ac8f9d0e55",
+  "title": "What does foundations of computer science say...",
+  "createdAt": "2026-09-09T06:20:31.723Z",
+  "updatedAt": "2026-09-09T06:31:18.581Z",
+  "messages": [
+    {
+      "id": "48779b08-0a33-4b96-8aaf-ab4d495cc8b4",
+      "role": "user",
+      "content": "What does foundations of computer science say for section 1.5?",
+      "createdAt": "2026-09-09T06:20:33.358Z"
+    },
+    {
+      "id": "53661b55-6560-434c-9760-95d5c977e75e",
+      "role": "user",
+      "content": "What does foundations of computer science say for section 1.5?",
+      "createdAt": "2026-09-09T06:25:41.644Z"
+    },
+    {
+      "id": "87a6383b-0937-402e-94c6-d0755cefcec7",
+      "role": "assistant",
+      "content": "**Section 1.5 – Deduction**\n\nSection 1.5 of *Foundations of Computation* explains how logic can be used to draw conclusions from premises. A premise is a proposition that is accepted as true (or known to be true) for the purposes of an argument; a conclusion is a proposition that can be deduced logically from those premises. If the premises are true, logic forces us to accept the conclusion as true, which is the essence of a *valid* argument",
+      "thinking": "Need to summarize section 1.5. Provide citations.",
+      "createdAt": "2026-09-09T06:31:18.581Z",
+      "sources": [
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "1.5 Deduction",
+          "score": 8.142973549727115,
+          "sourceType": "pdf",
+          "pageStart": 36,
+          "pageEnd": 36,
+          "sectionNumber": "1.5",
+          "sectionTitle": "Deduction"
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "1.5. DEDUCTION 33",
+          "score": 6.979447696537322,
+          "sourceType": "pdf",
+          "pageStart": 37,
+          "pageEnd": 37,
+          "sectionNumber": "1.5",
+          "sectionTitle": "Deduction"
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "34 CHAPTER 1. LOGIC AND PROOF",
+          "score": 3.621780368159077,
+          "sourceType": "pdf",
+          "pageStart": 38,
+          "pageEnd": 38,
+          "sectionNumber": "1.5",
+          "sectionTitle": "Deduction"
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "1.5. DEDUCTION 35",
+          "score": 6.678536185372979,
+          "sourceType": "pdf",
+          "pageStart": 39,
+          "pageEnd": 39,
+          "sectionNumber": "1.5",
+          "sectionTitle": "Deduction"
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "36 CHAPTER 1. LOGIC AND PROOF",
+          "score": 3.9746910403562024,
+          "sourceType": "pdf",
+          "pageStart": 40,
+          "pageEnd": 40,
+          "sectionNumber": "1.5",
+          "sectionTitle": "Deduction"
+        },
+        {
+          "filePath": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+          "heading": "1.5. DEDUCTION 37",
+          "score": 7.935400627597191,
+          "sourceType": "pdf",
+          "pageStart": 41,
+          "pageEnd": 41,
+          "sectionNumber": "1.5",
+          "sectionTitle": "Deduction"
+        }
+      ]
+    }
+  ]
+}

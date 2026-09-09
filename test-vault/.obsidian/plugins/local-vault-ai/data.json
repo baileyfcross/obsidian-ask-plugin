@@ -1,8 +1,8 @@
 {
   "ollamaUrl": "http://192.168.1.164:11434",
   "chatModel": "gpt-oss:20b",
-  "chatReasoningEffort": "medium",
-  "chatKeepAlive": "5m",
+  "chatReasoningEffort": "low",
+  "chatKeepAlive": "10m",
   "showModelReasoning": true,
   "lectureModel": "qwen3:30b-instruct",
   "embeddingModel": "embeddinggemma",

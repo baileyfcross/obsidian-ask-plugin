@@ -645,6 +645,16 @@ export class LocalVaultAIView
               : ` (PDF p. ${source.pageStart})`
             : "";
 
+        const sectionLabel =
+          source.sectionNumber
+            ? ` → §${source.sectionNumber}` +
+              (source.sectionTitle
+                ? ` ${source.sectionTitle}`
+                : "")
+            : source.heading
+              ? ` → ${source.heading}`
+              : "";
+
         const button =
           sources.createEl(
             "button",
@@ -654,9 +664,7 @@ export class LocalVaultAIView
               text:
                 `[${index + 1}] ${source.filePath}` +
                 pdfPageLabel +
-                (source.heading
-                  ? ` → ${source.heading}`
-                  : ""),
+                sectionLabel,
             },
           );
 
@@ -983,15 +991,14 @@ export class LocalVaultAIView
             .toISOString(),
       };
 
-    this.currentConversation =
-      await this.localPlugin
-        .conversationStore
-        .appendMessage(
-          this
-            .currentConversation,
-          userMessage,
-        );
-
+    /*
+     * Do not persist the user message until the RAG
+     * request succeeds. A retrieval/search failure
+     * must not become conversation history, because
+     * the next short prompt would otherwise include
+     * the failed question and appear to retry it
+     * accidentally.
+     */
     this.inputEl.value = "";
     this.askButton.disabled =
       true;
@@ -999,11 +1006,21 @@ export class LocalVaultAIView
       "Working…",
     );
 
-    await this
-      .refreshConversationSelect();
+    /*
+     * Render the pending user message only in the UI.
+     * It is transient until the request completes.
+     */
+    if (
+      this.currentConversation
+        .messages.length === 0 &&
+      this.messagesEl
+    ) {
+      this.messagesEl.empty();
+    }
 
-    await this
-      .renderConversation();
+    await this.renderMessage(
+      userMessage,
+    );
 
     const streamingUi =
       this.createStreamingMessage();
@@ -1042,10 +1059,27 @@ export class LocalVaultAIView
                   }
 
                   if (
-                    info.section
+                    info.sourceConfidence !==
+                    undefined
                   ) {
                     parts.push(
-                      `section ${info.section}`,
+                      `source match ${Math.round(info.sourceConfidence)}%`,
+                    );
+                  }
+
+                  if (
+                    info.section
+                  ) {
+                    const sectionText =
+                      info.sectionTitle
+                        ? `section ${info.section} — ${info.sectionTitle}`
+                        : `section ${info.section}`;
+
+                    parts.push(
+                      info.mode ===
+                        "section"
+                        ? `exact ${sectionText}`
+                        : sectionText,
                     );
                   }
 
@@ -1131,6 +1165,20 @@ export class LocalVaultAIView
         "Complete",
       );
 
+      /*
+       * The request succeeded. Commit the pending
+       * user message first, then the assistant reply,
+       * so saved history remains a complete turn.
+       */
+      this.currentConversation =
+        await this.localPlugin
+          .conversationStore
+          .appendMessage(
+            this
+              .currentConversation,
+            userMessage,
+          );
+
       const assistantMessage:
         ConversationMessage = {
           id:
@@ -1158,6 +1206,10 @@ export class LocalVaultAIView
                   source.pageStart,
                 pageEnd:
                   source.pageEnd,
+                sectionNumber:
+                  source.sectionNumber,
+                sectionTitle:
+                  source.sectionTitle,
               }),
             ),
         };
@@ -1192,6 +1244,18 @@ export class LocalVaultAIView
       streamingUi.status.setText(
         "Request failed",
       );
+
+      /*
+       * Remove the transient failed turn from the UI
+       * by re-rendering only persisted conversation
+       * history, then restore the question for an
+       * explicit retry.
+       */
+      await this
+        .renderConversation();
+
+      this.inputEl.value =
+        question;
 
       new Notice(
         error instanceof Error

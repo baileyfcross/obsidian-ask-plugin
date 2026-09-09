@@ -6,18 +6,32 @@ export interface VaultChunk {
   id: string;
 
   /*
-   * sourceKey is an enum-indexed copy of filePath.
-   * It exists so Orama can apply an exact source
-   * filter during a hybrid search.
+   * Exact-filter fields.
    */
   sourceKey: string;
   sourceType: SourceType;
+  sectionKey: string;
+
+  /*
+   * Search-friendly normalized source name. This
+   * splits CamelCase and removes filename version
+   * suffixes before indexing.
+   */
+  sourceSearchName: string;
 
   filePath: string;
   fileName: string;
   folder: string;
   title: string;
+
   heading: string;
+
+  /*
+   * Empty strings mean "not a numbered section".
+   */
+  sectionNumber: string;
+  sectionTitle: string;
+
   content: string;
 
   tags: string[];
@@ -44,6 +58,10 @@ export interface RetrievedChunk {
 
   title: string;
   heading: string;
+
+  sectionNumber: string;
+  sectionTitle: string;
+
   content: string;
 
   tags: string[];
@@ -62,11 +80,13 @@ export interface ConversationSource {
 
   /*
    * Optional for backward compatibility with
-   * conversations saved before PDF indexing.
+   * conversations saved before PDF section metadata.
    */
   sourceType?: SourceType;
   pageStart?: number;
   pageEnd?: number;
+  sectionNumber?: string;
+  sectionTitle?: string;
 }
 
 export interface ConversationMessage {

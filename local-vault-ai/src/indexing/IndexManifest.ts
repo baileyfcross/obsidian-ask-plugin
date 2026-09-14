@@ -2,31 +2,43 @@ import {
   DataAdapter,
 } from "obsidian";
 import {
+  EmbeddingDescriptor,
+  EmbeddingProvider,
+} from "../embeddings/EmbeddingService";
+import {
   SourceType,
 } from "../types";
 
-export const INDEX_VERSION = 5;
+export const INDEX_VERSION =
+  7;
 
 export interface IndexedDocument {
   hash: string;
   mtime: number;
   chunkIds: string[];
 
-  sourceType: SourceType;
+  sourceType:
+    SourceType;
+
   fileName: string;
   title: string;
-
-  /*
-   * Defined for PDFs. Markdown sources omit it.
-   */
   pageCount?: number;
 }
 
 export interface IndexManifest {
   version: number;
-  embeddingModel: string;
-  embeddingDimensions: number;
-  lastIndexedAt: string;
+
+  embeddingProvider:
+    EmbeddingProvider;
+
+  embeddingIdentity:
+    string;
+
+  embeddingDimensions:
+    number;
+
+  lastIndexedAt:
+    string;
 
   documents:
     Record<
@@ -36,14 +48,21 @@ export interface IndexManifest {
 }
 
 export function createEmptyManifest(
-  embeddingModel: string,
-  embeddingDimensions: number,
+  descriptor:
+    EmbeddingDescriptor,
+  embeddingDimensions:
+    number,
 ): IndexManifest {
   return {
     version:
       INDEX_VERSION,
 
-    embeddingModel,
+    embeddingProvider:
+      descriptor.provider,
+
+    embeddingIdentity:
+      descriptor.identity,
+
     embeddingDimensions,
 
     lastIndexedAt:
@@ -55,8 +74,10 @@ export function createEmptyManifest(
 }
 
 export async function loadManifest(
-  adapter: DataAdapter,
-  path: string,
+  adapter:
+    DataAdapter,
+  path:
+    string,
 ): Promise<IndexManifest | null> {
   if (
     !(await adapter.exists(
@@ -67,17 +88,23 @@ export async function loadManifest(
   }
 
   const raw =
-    await adapter.read(path);
+    await adapter.read(
+      path,
+    );
 
   return JSON.parse(
     raw,
-  ) as IndexManifest;
+  ) as
+    IndexManifest;
 }
 
 export async function saveManifest(
-  adapter: DataAdapter,
-  path: string,
-  manifest: IndexManifest,
+  adapter:
+    DataAdapter,
+  path:
+    string,
+  manifest:
+    IndexManifest,
 ): Promise<void> {
   manifest.lastIndexedAt =
     new Date()

@@ -43,7 +43,7 @@ export class LocalVaultAISettingTab
     new Setting(containerEl)
       .setName("Server URL")
       .setDesc(
-        "Local Ollama API address. The default is http://localhost:11434.",
+        "Primary model server. All chat, reasoning, lecture, and other generative model requests always use this Ollama server. If local embeddings are disabled, embedding requests use this same server too.",
       )
       .addText((text) =>
         text
@@ -71,7 +71,7 @@ export class LocalVaultAISettingTab
     new Setting(containerEl)
       .setName("Connection")
       .setDesc(
-        "Verify that Obsidian can reach the local Ollama server.",
+        "Verify that Obsidian can reach the configured Ollama server.",
       )
       .addButton((button) =>
         button
@@ -112,7 +112,7 @@ export class LocalVaultAISettingTab
         "General / Vault Explorer model",
       )
       .setDesc(
-        "Used for normal vault questions, synthesis, comparisons, and general knowledge. Recommended: gpt-oss:20b.",
+        "Used for normal vault questions, synthesis, comparisons, and general knowledge.",
       )
       .addText((text) =>
         text
@@ -139,7 +139,7 @@ export class LocalVaultAISettingTab
         "General model reasoning effort",
       )
       .setDesc(
-        "Controls reasoning depth for normal vault chat. Low is recommended for everyday questions; increase it only when deeper synthesis is useful.",
+        "Controls reasoning depth for GPT-OSS vault chat. Low is faster; Medium or High can be useful for deeper synthesis.",
       )
       .addDropdown((dropdown) =>
         dropdown
@@ -179,7 +179,7 @@ export class LocalVaultAISettingTab
         "Show model reasoning",
       )
       .setDesc(
-        "Shows Ollama's model-provided reasoning trace in a collapsed panel above assistant answers when the selected model returns one.",
+        "Shows Ollama's model-provided reasoning trace in the chat UI when the selected model returns one.",
       )
       .addToggle((toggle) =>
         toggle
@@ -204,7 +204,10 @@ export class LocalVaultAISettingTab
                     VIEW_TYPE_LOCAL_VAULT_AI,
                   );
 
-              for (const leaf of leaves) {
+              for (
+                const leaf of
+                leaves
+              ) {
                 if (
                   leaf.view instanceof
                   LocalVaultAIView
@@ -222,7 +225,7 @@ export class LocalVaultAISettingTab
         "General model keep-alive",
       )
       .setDesc(
-        "How long Ollama keeps the general model loaded after a chat response. Keeping it loaded avoids repeated model-load delays. The Model Runtime controls can still unload it manually.",
+        "How long Ollama keeps the general model loaded after a chat response. Runtime controls can still unload it manually.",
       )
       .addDropdown((dropdown) =>
         dropdown
@@ -267,7 +270,7 @@ export class LocalVaultAISettingTab
     new Setting(containerEl)
       .setName("Lecture model")
       .setDesc(
-        "Used only for lecture and slide generation. Recommended: qwen3:30b-instruct.",
+        "Used only for lecture and slide generation.",
       )
       .addText((text) =>
         text
@@ -290,11 +293,48 @@ export class LocalVaultAISettingTab
       );
 
     new Setting(containerEl)
+      .setName("Embeddings")
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName(
+        "Use local embeddings",
+      )
+      .setDesc(
+        "Default: enabled. Only document/query embeddings run locally. Chat, reasoning, lecture generation, and all other generative model requests still go to the configured Ollama server. Local mode uses @huggingface/tokenizers plus ONNX Runtime Web directly, with no local Ollama server. The first local use downloads and caches the embedding model/runtime assets.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(
+            this.localPlugin
+              .settings
+              .useLocalEmbeddings,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .useLocalEmbeddings =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+
+              this.display();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
       .setName(
         "Embedding model",
       )
       .setDesc(
-        "Used to index and retrieve notes. Changing this requires a full knowledge-index rebuild.",
+        this.localPlugin
+          .settings
+          .useLocalEmbeddings
+          ? "Local embeddings are enabled. This Ollama embedding-model field is preserved but not used. It becomes active if local embeddings are disabled."
+          : "Ollama model used only for document/query embeddings. Chat and lecture models still use their own model settings on the same Ollama server. Changing this requires a full knowledge-index rebuild.",
       )
       .addText((text) =>
         text
@@ -302,6 +342,11 @@ export class LocalVaultAISettingTab
             this.localPlugin
               .settings
               .embeddingModel,
+          )
+          .setDisabled(
+            this.localPlugin
+              .settings
+              .useLocalEmbeddings,
           )
           .onChange(
             async (value) => {
@@ -316,9 +361,7 @@ export class LocalVaultAISettingTab
           ),
       );
 
-    /*
-     * Safe model unload / runtime controls.
-     */
+
     addModelRuntimeSettings(
       containerEl,
       this.localPlugin,
@@ -358,7 +401,7 @@ export class LocalVaultAISettingTab
         "Retrieved chunks",
       )
       .setDesc(
-        "How many chunks are supplied to the general chat model.",
+        "Maximum number of chunks supplied to general chat retrieval before any source-specific context limits are applied.",
       )
       .addSlider((slider) =>
         slider
@@ -391,7 +434,7 @@ export class LocalVaultAISettingTab
         "Semantic weight",
       )
       .setDesc(
-        "Balances vector similarity against exact text matching. 55% is a good starting point.",
+        "Balances vector similarity against exact text matching.",
       )
       .addSlider((slider) =>
         slider
@@ -433,7 +476,7 @@ export class LocalVaultAISettingTab
         "Minimum vector similarity",
       )
       .setDesc(
-        "Lower values retrieve more semantic matches. Start at 0.35 and tune using your vault.",
+        "Lower values retrieve more semantic matches.",
       )
       .addSlider((slider) =>
         slider
@@ -505,7 +548,7 @@ export class LocalVaultAISettingTab
         "Automatic indexing",
       )
       .setDesc(
-        "Automatically re-index a Markdown note after it changes.",
+        "Automatically re-index Markdown and PDF sources after they change.",
       )
       .addToggle((toggle) =>
         toggle
@@ -527,6 +570,185 @@ export class LocalVaultAISettingTab
           ),
       );
 
+    new Setting(containerEl)
+      .setName(
+        "Concurrent source processing",
+      )
+      .setDesc(
+        "How many Markdown/PDF sources may be prepared at once during a full rebuild. Actual file reads/writes are separately limited by Concurrent filesystem operations. Start at 3.",
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(
+            1,
+            6,
+            1,
+          )
+          .setDynamicTooltip()
+          .setValue(
+            this.localPlugin
+              .settings
+              .indexingConcurrency,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .indexingConcurrency =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Concurrent filesystem operations",
+      )
+      .setDesc(
+        "Maximum number of actual vault/plugin file reads or writes allowed at once. Source processing can remain higher because CPU work continues after each read. Start at 2; use 1 for network, cloud-synced, external, or timeout-prone vaults.",
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(
+            1,
+            4,
+            1,
+          )
+          .setDynamicTooltip()
+          .setValue(
+            this.localPlugin
+              .settings
+              .filesystemConcurrency,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .filesystemConcurrency =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Concurrent PDF page extraction",
+      )
+      .setDesc(
+        "Global maximum number of PDF pages that PDF.js may extract at the same time across all active PDFs. Start at 6. This is separate from source concurrency so several books cannot each create an unbounded page pool.",
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(
+            1,
+            12,
+            1,
+          )
+          .setDynamicTooltip()
+          .setValue(
+            this.localPlugin
+              .settings
+              .pdfPageConcurrency,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .pdfPageConcurrency =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Embedding batch size",
+      )
+      .setDesc(
+        this.localPlugin
+          .settings
+          .useLocalEmbeddings
+          ? "How many chunks are processed together by the local ONNX embedding model. 32 is a conservative default."
+          : "How many chunks are sent to the Ollama embedding model in each /api/embed request. 32 is a conservative default.",
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(
+            8,
+            64,
+            8,
+          )
+          .setDynamicTooltip()
+          .setValue(
+            this.localPlugin
+              .settings
+              .embeddingBatchSize,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .embeddingBatchSize =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Concurrent embedding requests",
+      )
+      .setDesc(
+        this.localPlugin
+          .settings
+          .useLocalEmbeddings
+          ? "Local embeddings use one shared batched ONNX pipeline, so Ollama request concurrency does not apply."
+          : "Global maximum number of simultaneous /api/embed requests sent to Ollama during a rebuild. Start at 2.",
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(
+            1,
+            4,
+            1,
+          )
+          .setDynamicTooltip()
+          .setValue(
+            this.localPlugin
+              .settings
+              .embeddingConcurrency,
+          )
+          .setDisabled(
+            this.localPlugin
+              .settings
+              .useLocalEmbeddings,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .embeddingConcurrency =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+
     const status =
       this.localPlugin
         .indexManager
@@ -536,7 +758,7 @@ export class LocalVaultAISettingTab
       .setName("Index status")
       .setDesc(
         `${status.message}\n` +
-          `${status.documentCount} note(s), ${status.chunkCount} chunk(s).`,
+          `${status.documentCount} source(s), ${status.chunkCount} chunk(s).`,
       );
 
     new Setting(containerEl)
@@ -544,7 +766,7 @@ export class LocalVaultAISettingTab
         "Rebuild knowledge index",
       )
       .setDesc(
-        "Recreates the knowledge index and embeddings from the current vault. Saved conversations are preserved.",
+        "Recreates the knowledge index and embeddings from current Markdown/PDF sources using the selected local or Ollama embedding backend. Saved conversations are preserved. Parallel-indexing settings are applied when the rebuild starts.",
       )
       .addButton((button) =>
         button

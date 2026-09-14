@@ -13,6 +13,9 @@ import {
   LocalVaultAISettings,
 } from "../settings/Settings";
 import {
+  EmbeddingServiceRouter,
+} from "../embeddings/EmbeddingServiceRouter";
+import {
   ConversationMessage,
   RagAnswer,
   RetrievedChunk,
@@ -81,6 +84,8 @@ export class RagService {
       LocalVaultAISettings,
     private readonly modelRuntime:
       ModelRuntimeManager,
+    private readonly embeddings:
+      EmbeddingServiceRouter,
   ) {}
 
   async ask(
@@ -115,6 +120,27 @@ export class RagService {
         .ollamaUrl,
     );
 
+    const leaseModels =
+      [
+        this.settings
+          .chatModel,
+      ];
+
+    const remoteEmbeddingModel =
+      this.embeddings
+        .getOllamaModelName();
+
+    if (
+      remoteEmbeddingModel &&
+      !leaseModels.includes(
+        remoteEmbeddingModel,
+      )
+    ) {
+      leaseModels.push(
+        remoteEmbeddingModel,
+      );
+    }
+
     const lease =
       this.modelRuntime
         .acquireJob({
@@ -123,13 +149,8 @@ export class RagService {
           label:
             "Answering vault question",
 
-          models: [
-            this.settings
-              .embeddingModel,
-
-            this.settings
-              .chatModel,
-          ],
+          models:
+            leaseModels,
         });
 
     try {
@@ -271,10 +292,8 @@ export class RagService {
         );
 
       const embeddings =
-        await this.ollama
+        await this.embeddings
           .embed(
-            this.settings
-              .embeddingModel,
             [retrievalQuery],
           );
 
@@ -463,6 +482,14 @@ export class RagService {
     let answerStarted =
       false;
 
+    /*
+     * GENERATION ALWAYS USES OLLAMA.
+     *
+     * The embedding toggle above affects only query
+     * vector creation. The final answer, reasoning,
+     * and streamed text always go through the configured
+     * Ollama server using chatModel.
+     */
     const response =
       await this.ollama
         .chatStreamWithThinking(

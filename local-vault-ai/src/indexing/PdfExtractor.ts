@@ -1,3 +1,8 @@
+import {
+  AsyncSemaphore,
+  runBoundedPool,
+} from "./Concurrency";
+
 export interface PdfPageText {
   pageNumber: number;
   pageLabel?: string;
@@ -10,6 +15,38 @@ export interface ExtractedPdf {
   pageCount: number;
   pages: PdfPageText[];
   extractedCharacterCount: number;
+}
+
+export interface PdfExtractionProgress {
+  pageNumber: number;
+  pageCount: number;
+  activePages: number;
+  completedPages: number;
+}
+
+export interface PdfExtractionOptions {
+  /*
+   * Shared across every active PDF during a rebuild.
+   * This is what prevents:
+   *
+   *   3 PDFs × 6 pages each = 18 PDF.js operations
+   *
+   * The semaphore caps the GLOBAL total instead.
+   */
+  pageSemaphore?:
+    AsyncSemaphore;
+
+  /*
+   * Local worker count for this PDF. The shared
+   * semaphore remains the final global limit.
+   */
+  pageConcurrency?:
+    number;
+
+  onProgress?: (
+    progress:
+      PdfExtractionProgress,
+  ) => void;
 }
 
 export class PdfNoTextError
@@ -516,6 +553,8 @@ function ensureBundledPdfWorker(
 export async function extractPdf(
   bytes: Uint8Array,
   fileName: string,
+  options:
+    PdfExtractionOptions = {},
 ): Promise<ExtractedPdf> {
   const {
     getDocument,
@@ -560,61 +599,179 @@ export async function extractPdf(
         metadata?.info,
       );
 
-    const pages:
-      PdfPageText[] = [];
+    /*
+     * Allocate by physical page number so completion
+     * order never changes document order.
+     *
+     * Page 38 may finish before page 36, but PdfChunker
+     * still receives:
+     *
+     *   page 36
+     *   page 37
+     *   page 38
+     *
+     * in the correct sequence.
+     */
+    const pages =
+      new Array<
+        PdfPageText | undefined
+      >(
+        document.numPages,
+      );
 
-    let extractedCharacterCount =
-      0;
+    const pageNumbers =
+      Array.from(
+        {
+          length:
+            document.numPages,
+        },
+        (
+          _,
+          index,
+        ) => index + 1,
+      );
 
-    for (
-      let pageNumber = 1;
-      pageNumber <=
-      document.numPages;
-      pageNumber += 1
-    ) {
-      const page =
-        await document.getPage(
+    const configuredConcurrency =
+      Math.max(
+        1,
+        Math.floor(
+          options
+            .pageConcurrency ??
+            1,
+        ),
+      );
+
+    /*
+     * When no shared limiter is supplied (for example,
+     * another future caller), use a local limiter so
+     * the same extraction code remains safe.
+     */
+    const pageSemaphore =
+      options.pageSemaphore ??
+      new AsyncSemaphore(
+        configuredConcurrency,
+      );
+
+    let activePages = 0;
+    let completedPages = 0;
+
+    const emitProgress =
+      (
+        pageNumber:
+          number,
+      ): void => {
+        options.onProgress?.({
           pageNumber,
-        );
+          pageCount:
+            document.numPages,
+          activePages,
+          completedPages,
+        });
+      };
 
-      const textContent =
-        await page
-          .getTextContent();
-
-      const lines =
-        reconstructLines(
-          textContent.items as
-            unknown[],
-        );
-
-      const text =
-        lines
-          .join("\n")
-          .trim();
-
-      extractedCharacterCount +=
-        text.length;
-
-      const pageLabel =
-        pageLabels?.[
-          pageNumber - 1
-        ];
-
-      pages.push({
+    await runBoundedPool(
+      pageNumbers,
+      configuredConcurrency,
+      async (
         pageNumber,
+      ) => {
+        await pageSemaphore.run(
+          async () => {
+            activePages += 1;
 
-        pageLabel:
-          typeof pageLabel ===
-          "string"
-            ? pageLabel
-            : undefined,
+            emitProgress(
+              pageNumber,
+            );
 
-        lines,
-        text,
-      });
+            let page:
+              Awaited<
+                ReturnType<
+                  typeof document.getPage
+                >
+              > | null = null;
 
-      page.cleanup();
-    }
+            try {
+              page =
+                await document
+                  .getPage(
+                    pageNumber,
+                  );
+
+              const textContent =
+                await page
+                  .getTextContent();
+
+              const lines =
+                reconstructLines(
+                  textContent
+                    .items as
+                    unknown[],
+                );
+
+              const text =
+                lines
+                  .join("\n")
+                  .trim();
+
+              const pageLabel =
+                pageLabels?.[
+                  pageNumber - 1
+                ];
+
+              pages[
+                pageNumber - 1
+              ] = {
+                pageNumber,
+
+                pageLabel:
+                  typeof pageLabel ===
+                  "string"
+                    ? pageLabel
+                    : undefined,
+
+                lines,
+                text,
+              };
+            } finally {
+              page?.cleanup();
+
+              activePages =
+                Math.max(
+                  0,
+                  activePages - 1,
+                );
+
+              completedPages +=
+                1;
+
+              emitProgress(
+                pageNumber,
+              );
+            }
+          },
+        );
+      },
+    );
+
+    const orderedPages =
+      pages.filter(
+        (
+          page,
+        ): page is PdfPageText =>
+          page !==
+          undefined,
+      );
+
+    const extractedCharacterCount =
+      orderedPages.reduce(
+        (
+          total,
+          page,
+        ) =>
+          total +
+          page.text.length,
+        0,
+      );
 
     if (
       extractedCharacterCount <
@@ -631,7 +788,8 @@ export async function extractPdf(
       pageCount:
         document.numPages,
 
-      pages,
+      pages:
+        orderedPages,
 
       extractedCharacterCount,
     };

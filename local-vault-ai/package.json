@@ -1,31 +1,33 @@
 {
-  "name": "local-vault-ai",
-  "version": "0.3.0",
-  "description": "Local RAG assistant for an Obsidian vault using Ollama and Orama.",
-  "main": "main.js",
-  "scripts": {
-    "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production",
-    "typecheck": "tsc --noEmit",
-	"package": "bash ./scripts/package.sh",
-    "deploy:test": "bash ./scripts/deploy-test.sh"
-  },
-  "keywords": [
-    "obsidian",
-    "ollama",
-    "rag",
-    "local-ai",
-	"pdf"
-  ],
-  "license": "MIT",
-  "dependencies": {
-    "@orama/orama": "^3.0.0",
-	"pdfjs-dist": "^6.3.289"
-  },
-  "devDependencies": {
-    "@types/node": "^22.15.17",
-    "esbuild": "0.25.5",
-    "obsidian": "latest",
-    "typescript": "^5.8.3"
-  }
+	"name": "local-vault-ai",
+	"version": "0.3.1",
+	"description": "Local RAG assistant for an Obsidian vault using Ollama and Orama.",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "node esbuild.config.mjs production",
+		"typecheck": "tsc --noEmit",
+		"package": "bash ./scripts/package.sh",
+		"deploy:test": "bash ./scripts/deploy-test.sh"
+	},
+	"keywords": [
+		"obsidian",
+		"ollama",
+		"rag",
+		"local-ai",
+		"pdf"
+	],
+	"license": "MIT",
+	"dependencies": {
+		"@huggingface/tokenizers": "^0.2.0",
+		"@orama/orama": "^3.0.0",
+		"onnxruntime-web": "^1.29.0",
+		"pdfjs-dist": "^6.3.289"
+	},
+	"devDependencies": {
+		"@types/node": "^22.15.17",
+		"esbuild": "0.25.5",
+		"obsidian": "latest",
+		"typescript": "^5.8.3"
+	}
 }

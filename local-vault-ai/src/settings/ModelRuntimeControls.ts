@@ -310,12 +310,21 @@ class ModelRuntimeModal extends Modal {
           name:
             settings.chatModel,
         },
-        {
-          role: "Embedding",
-          name:
-            settings.embeddingModel,
-        },
       ];
+
+    if (
+      !settings
+        .useLocalEmbeddings
+    ) {
+      candidates.push({
+        role:
+          "Embedding",
+
+        name:
+          settings
+            .embeddingModel,
+      });
+    }
 
     const lectureModel =
       (

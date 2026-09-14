@@ -11,6 +11,7 @@ export interface PluginPaths {
   manifestPath: string;
   conversationsDir: string;
   conversationsIndexPath: string;
+  localEmbeddingsDir: string;
 }
 
 export function getPluginPaths(
@@ -29,6 +30,10 @@ export function getPluginPaths(
     `${dataDir}/conversations`,
   );
 
+  const localEmbeddingsDir = normalizePath(
+    `${dataDir}/local-embeddings`,
+  );
+
   return {
     pluginDir,
     dataDir,
@@ -42,6 +47,7 @@ export function getPluginPaths(
     conversationsIndexPath: normalizePath(
       `${conversationsDir}/index.json`,
     ),
+    localEmbeddingsDir,
   };
 }
 
@@ -59,6 +65,11 @@ export async function ensurePluginPaths(
   await ensureDirectory(
     adapter,
     paths.conversationsDir,
+  );
+
+  await ensureDirectory(
+    adapter,
+    paths.localEmbeddingsDir,
   );
 }
 

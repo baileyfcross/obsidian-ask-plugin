@@ -17,6 +17,9 @@ import {
   KnowledgeIndex,
 } from "../search/KnowledgeIndex";
 import {
+  EmbeddingServiceRouter,
+} from "../embeddings/EmbeddingServiceRouter";
+import {
   IndexStatus,
   SourceType,
   VaultChunk,
@@ -49,11 +52,50 @@ import {
   loadManifest,
   saveManifest,
 } from "./IndexManifest";
+import {
+  AsyncSemaphore,
+  runBoundedPool,
+} from "./Concurrency";
+import {
+  FileSystemGate,
+  FileSystemOperationError,
+} from "./FileSystemGate";
 
-const EMBEDDING_BATCH_SIZE = 24;
-const PERSIST_DEBOUNCE_MS = 2200;
+const PERSIST_DEBOUNCE_MS =
+  2200;
+
 const NO_SECTION_KEY =
   "__none__";
+
+const MIN_SOURCE_CONCURRENCY =
+  1;
+
+const MAX_SOURCE_CONCURRENCY =
+  8;
+
+const MIN_FILESYSTEM_CONCURRENCY =
+  1;
+
+const MAX_FILESYSTEM_CONCURRENCY =
+  4;
+
+const MIN_PDF_PAGE_CONCURRENCY =
+  1;
+
+const MAX_PDF_PAGE_CONCURRENCY =
+  16;
+
+const MIN_EMBEDDING_BATCH_SIZE =
+  4;
+
+const MAX_EMBEDDING_BATCH_SIZE =
+  128;
+
+const MIN_EMBEDDING_CONCURRENCY =
+  1;
+
+const MAX_EMBEDDING_CONCURRENCY =
+  6;
 
 interface PreparedChunk {
   heading: string;
@@ -65,6 +107,11 @@ interface PreparedChunk {
   pageEnd: number;
 }
 
+interface EmbeddedChunk
+  extends PreparedChunk {
+  embedding: number[];
+}
+
 interface SourceInfo {
   sourceType: SourceType;
   title: string;
@@ -72,6 +119,48 @@ interface SourceInfo {
   links: string[];
   properties: string[];
   pageCount?: number;
+}
+
+interface PreparedDocument {
+  file: TFile;
+  fileHash: string;
+  source: SourceInfo;
+  chunks: EmbeddedChunk[];
+}
+
+interface RebuildProgress {
+  totalSources: number;
+  completedSources: number;
+
+  activeSources:
+    Set<string>;
+
+  activePdfPages:
+    number;
+
+  completedPdfPages:
+    number;
+
+  knownPdfPages:
+    number;
+
+  activeEmbeddingRequests:
+    number;
+
+  knownChunks:
+    number;
+
+  embeddedChunks:
+    number;
+
+  markdownCompleted:
+    number;
+
+  pdfCompleted:
+    number;
+
+  skippedPdfs:
+    number;
 }
 
 export class IndexManager {
@@ -83,6 +172,13 @@ export class IndexManager {
 
   private readonly ollama:
     OllamaClient;
+
+  /*
+   * Embedding-only router. This never handles chat or
+   * lecture generation.
+   */
+  private readonly embeddings:
+    EmbeddingServiceRouter;
 
   private readonly knowledgeIndex:
     KnowledgeIndex;
@@ -105,8 +201,10 @@ export class IndexManager {
     IndexStatus = {
       state:
         "uninitialized",
+
       message:
         "Index has not been initialized.",
+
       documentCount: 0,
       chunkCount: 0,
       lastIndexedAt: null,
@@ -126,6 +224,23 @@ export class IndexManager {
       number
     >();
 
+  /*
+   * Orama mutations and persistence remain
+   * serialized even when preparation/embedding
+   * happens concurrently.
+   */
+  private readonly commitSemaphore =
+    new AsyncSemaphore(1);
+
+  /*
+   * Actual vault/plugin filesystem I/O is throttled
+   * separately from source preparation. This allows
+   * PDF extraction/chunking/embedding to overlap
+   * without issuing too many adapter reads/writes.
+   */
+  private readonly fileSystem:
+    FileSystemGate;
+
   private persistTimer:
     number | null = null;
 
@@ -133,25 +248,6 @@ export class IndexManager {
     Promise<void> | null =
     null;
 
-  /*
-   * Constructor form used by the original PDF patch.
-   */
-  constructor(
-    app: App,
-    settings:
-      LocalVaultAISettings,
-    ollama:
-      OllamaClient,
-    knowledgeIndex:
-      KnowledgeIndex,
-    manifestPath:
-      string,
-  );
-
-  /*
-   * Constructor form used when the safe model-runtime
-   * lease has also been wired into indexing.
-   */
   constructor(
     app: App,
     settings:
@@ -160,25 +256,11 @@ export class IndexManager {
       OllamaClient,
     modelRuntime:
       ModelRuntimeManager,
+    embeddings:
+      EmbeddingServiceRouter,
     knowledgeIndex:
       KnowledgeIndex,
     manifestPath:
-      string,
-  );
-
-  constructor(
-    app: App,
-    settings:
-      LocalVaultAISettings,
-    ollama:
-      OllamaClient,
-    fourth:
-      | KnowledgeIndex
-      | ModelRuntimeManager,
-    fifth:
-      | KnowledgeIndex
-      | string,
-    sixth?:
       string,
   ) {
     this.app = app;
@@ -186,43 +268,36 @@ export class IndexManager {
       settings;
     this.ollama =
       ollama;
+    this.modelRuntime =
+      modelRuntime;
+    this.embeddings =
+      embeddings;
+    this.knowledgeIndex =
+      knowledgeIndex;
+    this.manifestPath =
+      manifestPath;
 
-    if (
-      typeof sixth ===
-      "string"
-    ) {
-      this.modelRuntime =
-        fourth as
-          ModelRuntimeManager;
-
-      this.knowledgeIndex =
-        fifth as
-          KnowledgeIndex;
-
-      this.manifestPath =
-        sixth;
-    } else {
-      this.modelRuntime =
-        null;
-
-      this.knowledgeIndex =
-        fourth as
-          KnowledgeIndex;
-
-      this.manifestPath =
-        fifth as string;
-    }
+    this.fileSystem =
+      new FileSystemGate(
+        this.filesystemConcurrency(),
+      );
   }
 
   async initialize():
     Promise<void> {
     try {
       this.manifest =
-        await loadManifest(
-          this.app.vault
-            .adapter,
-          this.manifestPath,
-        );
+        await this.fileSystem
+          .run(
+            "loading index manifest",
+            this.manifestPath,
+            async () =>
+              loadManifest(
+                this.app.vault
+                  .adapter,
+                this.manifestPath,
+              ),
+          );
 
       if (!this.manifest) {
         this.setStatus(
@@ -240,31 +315,45 @@ export class IndexManager {
       ) {
         this.setStatus(
           "needs-rebuild",
-          "The index format changed to add exact PDF section metadata and source-name resolution. Rebuild the index.",
+          "The index format changed. Rebuild the index.",
         );
 
         return;
       }
 
-      if (
-        this.manifest
-          .embeddingModel !==
-        this.settings
-          .embeddingModel
-      ) {
-        this.setStatus(
-          "needs-rebuild",
-          `The index uses "${this.manifest.embeddingModel}" but settings use ` +
-            `"${this.settings.embeddingModel}". Rebuild the index.`,
-        );
+const activeEmbedding =
+  this.embeddings
+    .getDescriptor();
 
-        return;
-      }
+if (
+  this.manifest
+    .embeddingProvider !==
+    activeEmbedding
+      .provider ||
+  this.manifest
+    .embeddingIdentity !==
+    activeEmbedding
+      .identity
+) {
+  this.setStatus(
+    "needs-rebuild",
+    `The knowledge index was built with "${this.manifest.embeddingIdentity}", ` +
+      `but the active embedding backend is "${activeEmbedding.identity}". ` +
+      "Rebuild the index before searching.",
+  );
+
+  return;
+}
 
       if (
-        !(await this
-          .knowledgeIndex
-          .existsOnDisk())
+        !(await this.fileSystem
+          .run(
+            "checking knowledge index",
+            "knowledge-index.json",
+            async () =>
+              this.knowledgeIndex
+                .existsOnDisk(),
+          ))
       ) {
         this.setStatus(
           "needs-rebuild",
@@ -274,11 +363,16 @@ export class IndexManager {
         return;
       }
 
-      await this
-        .knowledgeIndex
-        .load(
-          this.manifest
-            .embeddingDimensions,
+      await this.fileSystem
+        .run(
+          "loading knowledge index",
+          "knowledge-index.json",
+          async () =>
+            this.knowledgeIndex
+              .load(
+                this.manifest!
+                  .embeddingDimensions,
+              ),
         );
 
       this.setStatus(
@@ -331,18 +425,39 @@ export class IndexManager {
         .ollamaUrl,
     );
 
-    if (
-      this.manifest &&
-      this.manifest
-        .embeddingModel !==
-        this.settings
-          .embeddingModel
-    ) {
-      this.setStatus(
-        "needs-rebuild",
-        `Embedding model changed to "${this.settings.embeddingModel}". Rebuild the index.`,
+    /*
+     * Future filesystem operations use the new limit.
+     * Settings changes are not applied mid-rebuild.
+     */
+    this.fileSystem
+      .setConcurrency(
+        this.filesystemConcurrency(),
       );
-    }
+
+if (
+  this.manifest
+) {
+  const activeEmbedding =
+    this.embeddings
+      .getDescriptor();
+
+  if (
+    this.manifest
+      .embeddingProvider !==
+      activeEmbedding
+        .provider ||
+    this.manifest
+      .embeddingIdentity !==
+      activeEmbedding
+        .identity
+  ) {
+    this.setStatus(
+      "needs-rebuild",
+      `Embedding backend changed to "${activeEmbedding.displayName}". ` +
+        "Rebuild the knowledge index before searching.",
+    );
+  }
+}
   }
 
   async rebuildAll():
@@ -364,8 +479,13 @@ export class IndexManager {
       > | null = null;
 
     try {
+      const remoteEmbeddingModel =
+        this.embeddings
+          .getOllamaModelName();
+
       if (
-        this.modelRuntime
+        this.modelRuntime &&
+        remoteEmbeddingModel
       ) {
         lease =
           this.modelRuntime
@@ -377,26 +497,29 @@ export class IndexManager {
                 "Rebuilding knowledge index",
 
               models: [
-                this.settings
-                  .embeddingModel,
+                remoteEmbeddingModel,
               ],
             });
       }
 
+      const embeddingDescriptor =
+        this.embeddings
+          .getDescriptor();
+
       this.setStatus(
         "indexing",
-        "Checking Ollama...",
+        this.embeddings
+          .usesLocalEmbeddings()
+          ? "Preparing local embedding model..."
+          : "Checking Ollama embedding model...",
       );
 
-      await this
-        .validateOllamaForIndexing();
+      await this.embeddings
+        .validate();
 
       const dimensions =
-        await this.ollama
-          .embeddingDimension(
-            this.settings
-              .embeddingModel,
-          );
+        await this.embeddings
+          .embeddingDimension();
 
       await this
         .knowledgeIndex
@@ -406,8 +529,7 @@ export class IndexManager {
 
       this.manifest =
         createEmptyManifest(
-          this.settings
-            .embeddingModel,
+          embeddingDescriptor,
           dimensions,
         );
 
@@ -421,79 +543,188 @@ export class IndexManager {
               ),
           );
 
-      let markdownCount = 0;
-      let pdfCount = 0;
-      let skippedPdfCount = 0;
+      const sourceConcurrency =
+        this.sourceConcurrency();
 
-      for (
-        let fileIndex = 0;
-        fileIndex <
-        files.length;
-        fileIndex += 1
-      ) {
-        const file =
-          files[
-            fileIndex
-          ];
-
-        if (!file) {
-          continue;
-        }
-
-        this.setStatus(
-          "indexing",
-          `Indexing ${fileIndex + 1} of ${files.length}: ${file.path}`,
+      /*
+       * One global limiter is shared by every active
+       * PDF. Source workers may each schedule page
+       * work, but only pdfPageConcurrency pages total
+       * can be inside PDF.js extraction at once.
+       */
+      const pdfPageSemaphore =
+        new AsyncSemaphore(
+          this.pdfPageConcurrency(),
         );
 
-        try {
-          await this
-            .indexFileInternal(
-              file,
-              true,
+      const embeddingSemaphore =
+        new AsyncSemaphore(
+          this.embeddingConcurrency(),
+        );
+
+      const progress:
+        RebuildProgress = {
+        totalSources:
+          files.length,
+
+        completedSources:
+          0,
+
+        activeSources:
+          new Set<string>(),
+
+        activePdfPages:
+          0,
+
+        completedPdfPages:
+          0,
+
+        knownPdfPages:
+          0,
+
+        activeEmbeddingRequests:
+          0,
+
+        knownChunks:
+          0,
+
+        embeddedChunks:
+          0,
+
+        markdownCompleted:
+          0,
+
+        pdfCompleted:
+          0,
+
+        skippedPdfs:
+          0,
+      };
+
+      this.updateRebuildStatus(
+        progress,
+      );
+
+      await runBoundedPool(
+        files,
+        sourceConcurrency,
+        async (file) => {
+          progress.activeSources
+            .add(
+              file.path,
             );
 
-          if (
-            this.isPdfFile(
-              file,
-            )
-          ) {
-            pdfCount += 1;
-          } else {
-            markdownCount +=
-              1;
-          }
-        } catch (error) {
-          if (
-            error instanceof
-            PdfNoTextError
-          ) {
-            skippedPdfCount +=
+          this.updateRebuildStatus(
+            progress,
+          );
+
+          try {
+            const prepared =
+              await this
+                .prepareDocument(
+                  file,
+                  true,
+                  pdfPageSemaphore,
+                  embeddingSemaphore,
+                  progress,
+                );
+
+            if (!prepared) {
+              return;
+            }
+
+            /*
+             * One serialized commit prevents multiple
+             * source workers from mutating Orama or
+             * the manifest simultaneously.
+             */
+            await this
+              .commitSemaphore
+              .run(
+                async () => {
+                  await this
+                    .commitPreparedDocument(
+                      prepared,
+                    );
+                },
+              );
+
+            if (
+              prepared
+                .source
+                .sourceType ===
+              "pdf"
+            ) {
+              progress
+                .pdfCompleted +=
+                1;
+            } else {
+              progress
+                .markdownCompleted +=
+                1;
+            }
+          } catch (error) {
+            if (
+              error instanceof
+              PdfNoTextError
+            ) {
+              progress
+                .skippedPdfs +=
+                1;
+
+              console.warn(
+                `[Local Vault AI] ${error.message}`,
+              );
+
+              return;
+            }
+
+            throw error;
+          } finally {
+            progress.activeSources
+              .delete(
+                file.path,
+              );
+
+            progress
+              .completedSources +=
               1;
 
-            console.warn(
-              `[Local Vault AI] ${error.message}`,
+            this.updateRebuildStatus(
+              progress,
             );
-
-            continue;
           }
+        },
+      );
 
-          throw error;
-        }
-      }
-
+      /*
+       * Full rebuild persistence remains one final
+       * serialized save. We do not serialize the
+       * whole Orama index after every PDF.
+       */
       await this.persistNow();
 
       const skippedText =
-        skippedPdfCount > 0
-          ? ` Skipped ${skippedPdfCount} PDF(s) with no extractable text.`
+        progress.skippedPdfs >
+        0
+          ? ` Skipped ${progress.skippedPdfs} PDF(s) with no extractable text.`
           : "";
 
       this.setStatus(
         "ready",
-        `Indexed ${markdownCount} Markdown file(s) and ${pdfCount} PDF file(s).${skippedText}`,
+        `Indexed ${progress.markdownCompleted} Markdown file(s) and ` +
+          `${progress.pdfCompleted} PDF file(s).${skippedText}`,
       );
     } catch (error) {
       if (
+        error instanceof
+        FileSystemOperationError
+      ) {
+        this.setStatus(
+          "error",
+          error.message,
+        );
+      } else if (
         error instanceof
         ModelUnloadPendingError
       ) {
@@ -631,7 +862,8 @@ export class IndexManager {
       );
 
     if (
-      timer !== undefined
+      timer !==
+      undefined
     ) {
       window.clearTimeout(
         timer,
@@ -673,8 +905,13 @@ export class IndexManager {
       > | null = null;
 
     try {
+      const remoteEmbeddingModel =
+        this.embeddings
+          .getOllamaModelName();
+
       if (
-        this.modelRuntime
+        this.modelRuntime &&
+        remoteEmbeddingModel
       ) {
         lease =
           this.modelRuntime
@@ -686,24 +923,67 @@ export class IndexManager {
                 `Indexing ${file.path}`,
 
               models: [
-                this.settings
-                  .embeddingModel,
+                remoteEmbeddingModel,
               ],
             });
       }
 
-      await this
-        .validateOllamaForIndexing();
+      await this.embeddings
+        .validate();
 
-      await this
-        .indexFileInternal(
+      /*
+       * A single-file update can still parallelize
+       * that document's embedding batches.
+       */
+      const pdfPageSemaphore =
+        new AsyncSemaphore(
+          this.pdfPageConcurrency(),
+        );
+
+      const embeddingSemaphore =
+        new AsyncSemaphore(
+          this.embeddingConcurrency(),
+        );
+
+      const prepared =
+        await this.prepareDocument(
           file,
           false,
+          pdfPageSemaphore,
+          embeddingSemaphore,
+          null,
+        );
+
+      if (!prepared) {
+        return;
+      }
+
+      await this
+        .commitSemaphore
+        .run(
+          async () => {
+            await this
+              .commitPreparedDocument(
+                prepared,
+              );
+          },
         );
 
       this.schedulePersist();
       this.refreshStatusCounts();
     } catch (error) {
+      if (
+        error instanceof
+        FileSystemOperationError
+      ) {
+        this.setStatus(
+          "error",
+          error.message,
+        );
+
+        return;
+      }
+
       if (
         error instanceof
         PdfNoTextError
@@ -845,10 +1125,18 @@ export class IndexManager {
     );
   }
 
-  private async indexFileInternal(
+  private async prepareDocument(
     file: TFile,
     force: boolean,
-  ): Promise<void> {
+    pdfPageSemaphore:
+      AsyncSemaphore,
+    embeddingSemaphore:
+      AsyncSemaphore,
+    progress:
+      RebuildProgress | null,
+  ): Promise<
+    PreparedDocument | null
+  > {
     if (!this.manifest) {
       throw new Error(
         "Index manifest is not initialized.",
@@ -859,24 +1147,29 @@ export class IndexManager {
       file.extension
         .toLowerCase();
 
-    if (extension === "md") {
-      await this
-        .indexMarkdownFile(
+    if (
+      extension === "md"
+    ) {
+      return this
+        .prepareMarkdownDocument(
           file,
           force,
+          embeddingSemaphore,
+          progress,
         );
-
-      return;
     }
 
-    if (extension === "pdf") {
-      await this
-        .indexPdfFile(
+    if (
+      extension === "pdf"
+    ) {
+      return this
+        .preparePdfDocument(
           file,
           force,
+          pdfPageSemaphore,
+          embeddingSemaphore,
+          progress,
         );
-
-      return;
     }
 
     throw new Error(
@@ -884,10 +1177,16 @@ export class IndexManager {
     );
   }
 
-  private async indexMarkdownFile(
+  private async prepareMarkdownDocument(
     file: TFile,
     force: boolean,
-  ): Promise<void> {
+    embeddingSemaphore:
+      AsyncSemaphore,
+    progress:
+      RebuildProgress | null,
+  ): Promise<
+    PreparedDocument | null
+  > {
     if (!this.manifest) {
       throw new Error(
         "Index manifest is not initialized.",
@@ -895,8 +1194,14 @@ export class IndexManager {
     }
 
     const markdown =
-      await this.app.vault
-        .cachedRead(file);
+      await this.fileSystem
+        .run(
+          "reading Markdown source",
+          file.path,
+          async () =>
+            this.app.vault
+              .cachedRead(file),
+        );
 
     const fileHash =
       await sha256(
@@ -914,7 +1219,7 @@ export class IndexManager {
       existing?.hash ===
         fileHash
     ) {
-      return;
+      return null;
     }
 
     const metadata =
@@ -949,34 +1254,55 @@ export class IndexManager {
         }),
       );
 
-    await this
-      .replaceDocumentChunks(
-        file,
-        fileHash,
-        chunks,
-        {
-          sourceType:
-            "markdown",
+    const source:
+      SourceInfo = {
+      sourceType:
+        "markdown",
 
-          title:
-            file.basename,
+      title:
+        file.basename,
 
-          tags:
-            metadata.tags,
+      tags:
+        metadata.tags,
 
-          links:
-            metadata.links,
+      links:
+        metadata.links,
 
-          properties:
-            metadata.properties,
-        },
-      );
+      properties:
+        metadata.properties,
+    };
+
+    const embeddedChunks =
+      await this
+        .embedChunks(
+          file,
+          source,
+          chunks,
+          embeddingSemaphore,
+          progress,
+        );
+
+    return {
+      file,
+      fileHash,
+      source,
+      chunks:
+        embeddedChunks,
+    };
   }
 
-  private async indexPdfFile(
+  private async preparePdfDocument(
     file: TFile,
     force: boolean,
-  ): Promise<void> {
+    pdfPageSemaphore:
+      AsyncSemaphore,
+    embeddingSemaphore:
+      AsyncSemaphore,
+    progress:
+      RebuildProgress | null,
+  ): Promise<
+    PreparedDocument | null
+  > {
     if (!this.manifest) {
       throw new Error(
         "Index manifest is not initialized.",
@@ -984,8 +1310,14 @@ export class IndexManager {
     }
 
     const buffer =
-      await this.app.vault
-        .readBinary(file);
+      await this.fileSystem
+        .run(
+          "reading PDF source",
+          file.path,
+          async () =>
+            this.app.vault
+              .readBinary(file),
+        );
 
     const bytes =
       new Uint8Array(
@@ -1008,19 +1340,93 @@ export class IndexManager {
       existing?.hash ===
         fileHash
     ) {
-      return;
+      return null;
     }
 
     /*
-     * Extract before removing the previous version.
-     * If a modified PDF becomes unreadable, the last
-     * good indexed copy remains available.
+     * Extraction remains local to the desktop.
+     * Several source workers may interleave PDF
+     * extraction, while embedding requests are
+     * independently bounded by the global semaphore.
      */
+    let lastKnownPageCount = 0;
+
     const extracted =
       await extractPdf(
         bytes,
         file.name,
+        {
+          /*
+           * A PDF gets up to the configured number of
+           * local page workers, but every PDF shares
+           * the same global semaphore.
+           */
+          pageConcurrency:
+            this.pdfPageConcurrency(),
+
+          pageSemaphore:
+            pdfPageSemaphore,
+
+          onProgress:
+            progress
+              ? (
+                  pdfProgress,
+                ) => {
+                  /*
+                   * Each active PDF reports its full
+                   * page count repeatedly. Add it only
+                   * once for this document.
+                   */
+                  if (
+                    lastKnownPageCount ===
+                    0
+                  ) {
+                    lastKnownPageCount =
+                      pdfProgress
+                        .pageCount;
+
+                    progress
+                      .knownPdfPages +=
+                      pdfProgress
+                        .pageCount;
+                  }
+
+                  /*
+                   * The shared semaphore's active count
+                   * is the authoritative GLOBAL number,
+                   * rather than summing per-PDF values.
+                   */
+                  progress
+                    .activePdfPages =
+                    pdfPageSemaphore
+                      .getActiveCount();
+
+                  /*
+                   * PdfExtractor's completedPages value
+                   * is per-document. We update the
+                   * aggregate after extraction completes
+                   * below, avoiding double counting.
+                   */
+                  this.updateRebuildStatus(
+                    progress,
+                  );
+                }
+              : undefined,
+        },
       );
+
+    if (progress) {
+      progress.completedPdfPages +=
+        extracted.pageCount;
+
+      progress.activePdfPages =
+        pdfPageSemaphore
+          .getActiveCount();
+
+      this.updateRebuildStatus(
+        progress,
+      );
+    }
 
     const pdfChunks:
       PdfChunk[] =
@@ -1064,42 +1470,240 @@ export class IndexManager {
         }),
       );
 
-    await this
-      .replaceDocumentChunks(
-        file,
-        fileHash,
-        chunks,
-        {
-          sourceType:
-            "pdf",
+    const source:
+      SourceInfo = {
+      sourceType:
+        "pdf",
 
-          title:
-            extracted.title ??
-            file.basename,
+      title:
+        extracted.title ??
+        file.basename,
 
-          tags: [],
-          links: [],
-          properties: [],
+      tags: [],
+      links: [],
+      properties: [],
 
-          pageCount:
-            extracted.pageCount,
-        },
-      );
+      pageCount:
+        extracted.pageCount,
+    };
+
+    const embeddedChunks =
+      await this
+        .embedChunks(
+          file,
+          source,
+          chunks,
+          embeddingSemaphore,
+          progress,
+        );
+
+    return {
+      file,
+      fileHash,
+      source,
+      chunks:
+        embeddedChunks,
+    };
   }
 
-  private async replaceDocumentChunks(
+  private async embedChunks(
     file: TFile,
-    fileHash: string,
-    chunks:
-      PreparedChunk[],
     source:
       SourceInfo,
+    chunks:
+      PreparedChunk[],
+    embeddingSemaphore:
+      AsyncSemaphore,
+    progress:
+      RebuildProgress | null,
+  ): Promise<
+    EmbeddedChunk[]
+  > {
+    if (
+      chunks.length === 0
+    ) {
+      return [];
+    }
+
+    const batchSize =
+      this.embeddingBatchSize();
+
+    if (progress) {
+      progress.knownChunks +=
+        chunks.length;
+
+      this.updateRebuildStatus(
+        progress,
+      );
+    }
+
+    const batches:
+      Array<{
+        start: number;
+        chunks:
+          PreparedChunk[];
+      }> = [];
+
+    for (
+      let offset = 0;
+      offset <
+      chunks.length;
+      offset +=
+      batchSize
+    ) {
+      batches.push({
+        start:
+          offset,
+
+        chunks:
+          chunks.slice(
+            offset,
+            offset +
+              batchSize,
+          ),
+      });
+    }
+
+    /*
+     * All batches may be scheduled here, but the
+     * shared semaphore guarantees that no more than
+     * embeddingConcurrency are actually in flight
+     * across every active source worker.
+     *
+     * Promise.all preserves the original batch order.
+     */
+    const embeddedBatches =
+      await Promise.all(
+        batches.map(
+          async (
+            batch,
+          ): Promise<
+            EmbeddedChunk[]
+          > =>
+            embeddingSemaphore
+              .run(
+                async () => {
+                  if (progress) {
+                    progress
+                      .activeEmbeddingRequests +=
+                      1;
+
+                    this.updateRebuildStatus(
+                      progress,
+                    );
+                  }
+
+                  try {
+                    const inputs =
+                      batch.chunks
+                        .map(
+                          (chunk) =>
+                            this.embeddingText(
+                              file,
+                              source,
+                              chunk,
+                            ),
+                        );
+
+                    const embeddings =
+                      await this.embeddings
+                        .embed(
+                          inputs,
+                        );
+
+                    if (
+                      embeddings.length !==
+                      batch.chunks
+                        .length
+                    ) {
+                      throw new Error(
+                        `Embedding count mismatch for ${file.path}.`,
+                      );
+                    }
+
+                    const results:
+                      EmbeddedChunk[] =
+                      [];
+
+                    for (
+                      let index = 0;
+                      index <
+                      batch.chunks
+                        .length;
+                      index += 1
+                    ) {
+                      const chunk =
+                        batch.chunks[
+                          index
+                        ];
+
+                      const embedding =
+                        embeddings[
+                          index
+                        ];
+
+                      if (
+                        !chunk ||
+                        !embedding
+                      ) {
+                        continue;
+                      }
+
+                      results.push({
+                        ...chunk,
+                        embedding,
+                      });
+                    }
+
+                    if (progress) {
+                      progress
+                        .embeddedChunks +=
+                        results.length;
+                    }
+
+                    return results;
+                  } finally {
+                    if (progress) {
+                      progress
+                        .activeEmbeddingRequests =
+                        Math.max(
+                          0,
+                          progress
+                            .activeEmbeddingRequests -
+                            1,
+                        );
+
+                      this.updateRebuildStatus(
+                        progress,
+                      );
+                    }
+                  }
+                },
+              ),
+        ),
+      );
+
+    return embeddedBatches
+      .flat();
+  }
+
+  private async commitPreparedDocument(
+    prepared:
+      PreparedDocument,
   ): Promise<void> {
     if (!this.manifest) {
       throw new Error(
         "Index manifest is not initialized.",
       );
     }
+
+    const {
+      file,
+      fileHash,
+      source,
+      chunks,
+    } =
+      prepared;
 
     const existing =
       this.manifest
@@ -1132,151 +1736,91 @@ export class IndexManager {
         .join(" ");
 
     for (
-      let offset = 0;
-      offset <
-      chunks.length;
-      offset +=
-      EMBEDDING_BATCH_SIZE
+      const chunk of
+      chunks
     ) {
-      const batch =
-        chunks.slice(
-          offset,
-          offset +
-          EMBEDDING_BATCH_SIZE,
+      const id =
+        this.chunkId(
+          file.path,
+          chunk.index,
         );
 
-      const inputs =
-        batch.map(
-          (chunk) =>
-            this.embeddingText(
-              file,
-              source,
-              chunk,
-            ),
+      const folder =
+        file.parent?.path ===
+        "/"
+          ? ""
+          : file.parent
+              ?.path ??
+            "";
+
+      const vaultChunk:
+        VaultChunk = {
+        id,
+
+        sourceKey:
+          file.path,
+
+        sourceType:
+          source.sourceType,
+
+        sourceSearchName,
+
+        sectionKey:
+          chunk.sectionNumber ||
+          NO_SECTION_KEY,
+
+        filePath:
+          file.path,
+
+        fileName:
+          file.name,
+
+        folder,
+
+        title:
+          source.title,
+
+        heading:
+          chunk.heading,
+
+        sectionNumber:
+          chunk.sectionNumber,
+
+        sectionTitle:
+          chunk.sectionTitle,
+
+        content:
+          chunk.content,
+
+        tags:
+          source.tags,
+
+        links:
+          source.links,
+
+        properties:
+          source.properties,
+
+        pageStart:
+          chunk.pageStart,
+
+        pageEnd:
+          chunk.pageEnd,
+
+        mtime:
+          file.stat.mtime,
+
+        embedding:
+          chunk.embedding,
+      };
+
+      await this
+        .knowledgeIndex
+        .add(
+          vaultChunk,
         );
 
-      const embeddings =
-        await this.ollama
-          .embed(
-            this.settings
-              .embeddingModel,
-            inputs,
-          );
-
-      if (
-        embeddings.length !==
-        batch.length
-      ) {
-        throw new Error(
-          `Embedding count mismatch for ${file.path}.`,
-        );
-      }
-
-      for (
-        let batchIndex = 0;
-        batchIndex <
-        batch.length;
-        batchIndex += 1
-      ) {
-        const chunk =
-          batch[
-            batchIndex
-          ];
-
-        const embedding =
-          embeddings[
-            batchIndex
-          ];
-
-        if (
-          !chunk ||
-          !embedding
-        ) {
-          continue;
-        }
-
-        const id =
-          this.chunkId(
-            file.path,
-            chunk.index,
-          );
-
-        const folder =
-          file.parent?.path ===
-          "/"
-            ? ""
-            : file.parent
-                ?.path ??
-              "";
-
-        const vaultChunk:
-          VaultChunk = {
-            id,
-
-            sourceKey:
-              file.path,
-
-            sourceType:
-              source.sourceType,
-
-            sourceSearchName,
-
-            sectionKey:
-              chunk.sectionNumber ||
-              NO_SECTION_KEY,
-
-            filePath:
-              file.path,
-
-            fileName:
-              file.name,
-
-            folder,
-
-            title:
-              source.title,
-
-            heading:
-              chunk.heading,
-
-            sectionNumber:
-              chunk.sectionNumber,
-
-            sectionTitle:
-              chunk.sectionTitle,
-
-            content:
-              chunk.content,
-
-            tags:
-              source.tags,
-
-            links:
-              source.links,
-
-            properties:
-              source.properties,
-
-            pageStart:
-              chunk.pageStart,
-
-            pageEnd:
-              chunk.pageEnd,
-
-            mtime:
-              file.stat.mtime,
-
-            embedding,
-          };
-
-        await this
-          .knowledgeIndex
-          .add(
-            vaultChunk,
-          );
-
-        chunkIds.push(id);
-      }
+      chunkIds.push(id);
     }
 
     this.manifest
@@ -1308,30 +1852,36 @@ export class IndexManager {
   private async removeDocument(
     path: string,
   ): Promise<void> {
-    if (!this.manifest) {
-      return;
-    }
-
-    const existing =
-      this.manifest
-        .documents[
-        path
-      ];
-
-    if (!existing) {
-      return;
-    }
-
     await this
-      .knowledgeIndex
-      .removeMany(
-        existing.chunkIds,
-      );
+      .commitSemaphore
+      .run(
+        async () => {
+          if (!this.manifest) {
+            return;
+          }
 
-    delete this.manifest
-      .documents[
-      path
-    ];
+          const existing =
+            this.manifest
+              .documents[
+              path
+            ];
+
+          if (!existing) {
+            return;
+          }
+
+          await this
+            .knowledgeIndex
+            .removeMany(
+              existing.chunkIds,
+            );
+
+          delete this.manifest
+            .documents[
+            path
+          ];
+        },
+      );
 
     this.schedulePersist();
     this.refreshStatusCounts();
@@ -1380,22 +1930,41 @@ export class IndexManager {
     ) {
       await this
         .persistInFlight;
+
+      return;
     }
 
     this.persistInFlight =
-      (async () => {
-        await this
-          .knowledgeIndex
-          .save();
+      this.commitSemaphore
+        .run(
+          async () => {
+            if (!this.manifest) {
+              return;
+            }
 
-        await saveManifest(
-          this.app.vault
-            .adapter,
-          this.manifestPath,
-          this.manifest as
-            IndexManifest,
+            await this.fileSystem
+              .run(
+                "saving knowledge index",
+                "knowledge-index.json",
+                async () =>
+                  this.knowledgeIndex
+                    .save(),
+              );
+
+            await this.fileSystem
+              .run(
+                "saving index manifest",
+                this.manifestPath,
+                async () =>
+                  saveManifest(
+                    this.app.vault
+                      .adapter,
+                    this.manifestPath,
+                    this.manifest!,
+                  ),
+              );
+          },
         );
-      })();
 
     try {
       await this
@@ -1408,42 +1977,10 @@ export class IndexManager {
     this.refreshStatusCounts();
   }
 
-  private async validateOllamaForIndexing():
-    Promise<void> {
-    this.ollama.setBaseUrl(
-      this.settings
-        .ollamaUrl,
-    );
-
-    const available =
-      await this.ollama
-        .isAvailable();
-
-    if (!available) {
-      throw new Error(
-        `Ollama is offline. Could not connect to ${this.settings.ollamaUrl}. ` +
-          "Start Ollama and try again.",
-      );
-    }
-
-    const exists =
-      await this.ollama
-        .modelExists(
-          this.settings
-            .embeddingModel,
-        );
-
-    if (!exists) {
-      throw new Error(
-        `Embedding model "${this.settings.embeddingModel}" is not installed in Ollama. ` +
-          `Run: ollama pull ${this.settings.embeddingModel}`,
-      );
-    }
-  }
-
   private embeddingText(
     file: TFile,
-    source: SourceInfo,
+    source:
+      SourceInfo,
     chunk:
       PreparedChunk,
   ): string {
@@ -1509,6 +2046,156 @@ export class IndexManager {
 
     return lines.join(
       "\n",
+    );
+  }
+
+  private sourceConcurrency():
+    number {
+    return this.clampInteger(
+      this.settings
+        .indexingConcurrency,
+      MIN_SOURCE_CONCURRENCY,
+      MAX_SOURCE_CONCURRENCY,
+      3,
+    );
+  }
+
+  private filesystemConcurrency():
+    number {
+    return this.clampInteger(
+      this.settings
+        .filesystemConcurrency,
+      MIN_FILESYSTEM_CONCURRENCY,
+      MAX_FILESYSTEM_CONCURRENCY,
+      2,
+    );
+  }
+
+  private pdfPageConcurrency():
+    number {
+    return this.clampInteger(
+      this.settings
+        .pdfPageConcurrency,
+      MIN_PDF_PAGE_CONCURRENCY,
+      MAX_PDF_PAGE_CONCURRENCY,
+      6,
+    );
+  }
+
+  private embeddingBatchSize():
+    number {
+    return this.clampInteger(
+      this.settings
+        .embeddingBatchSize,
+      MIN_EMBEDDING_BATCH_SIZE,
+      MAX_EMBEDDING_BATCH_SIZE,
+      32,
+    );
+  }
+
+  private embeddingConcurrency():
+    number {
+    if (
+      this.embeddings
+        .usesLocalEmbeddings()
+    ) {
+      return 1;
+    }
+
+    return this.clampInteger(
+      this.settings
+        .embeddingConcurrency,
+      MIN_EMBEDDING_CONCURRENCY,
+      MAX_EMBEDDING_CONCURRENCY,
+      2,
+    );
+  }
+
+  private clampInteger(
+    value: number,
+    minimum: number,
+    maximum: number,
+    fallback: number,
+  ): number {
+    if (
+      !Number.isFinite(value)
+    ) {
+      return fallback;
+    }
+
+    return Math.max(
+      minimum,
+      Math.min(
+        maximum,
+        Math.floor(value),
+      ),
+    );
+  }
+
+  private updateRebuildStatus(
+    progress:
+      RebuildProgress,
+  ): void {
+    const activeNames =
+      Array.from(
+        progress
+          .activeSources,
+      )
+        .slice(0, 3)
+        .map(
+          (path) =>
+            this.shortSourceName(
+              path,
+            ),
+        );
+
+    const activeSuffix =
+      activeNames.length > 0
+        ? ` · Active: ${activeNames.join(" | ")}`
+        : "";
+
+    const knownChunkText =
+      progress.knownChunks > 0
+        ? `${progress.embeddedChunks}/${progress.knownChunks} known chunks embedded`
+        : "waiting for chunks";
+
+    const pdfPageText =
+      progress.knownPdfPages > 0
+        ? `${progress.completedPdfPages}/${progress.knownPdfPages} known PDF pages extracted`
+        : "waiting for PDF pages";
+
+    this.setStatus(
+      "indexing",
+      `Indexing ${progress.completedSources}/${progress.totalSources} sources` +
+        ` · ${progress.activeSources.size} source worker(s) active` +
+        ` · ${this.fileSystem.getActiveCount()} filesystem op(s) active` +
+        ` · ${progress.activePdfPages} PDF page(s) active` +
+        ` · ${progress.activeEmbeddingRequests} embedding job(s) active` +
+        ` · ${pdfPageText}` +
+        ` · ${knownChunkText}` +
+        activeSuffix,
+    );
+  }
+
+  private shortSourceName(
+    path: string,
+  ): string {
+    const parts =
+      path.split("/");
+
+    const name =
+      parts[
+        parts.length - 1
+      ] ?? path;
+
+    if (
+      name.length <= 34
+    ) {
+      return name;
+    }
+
+    return (
+      `${name.slice(0, 31)}...`
     );
   }
 

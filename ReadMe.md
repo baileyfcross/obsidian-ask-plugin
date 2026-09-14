@@ -583,7 +583,7 @@ The configured Ollama URL may point to another computer on the LAN.
 Example:
 
 ```text
-http://192.168.1.164:11434
+http://192.168.0.1:11434
 ```
 
 Local embedding mode does not change this behavior.

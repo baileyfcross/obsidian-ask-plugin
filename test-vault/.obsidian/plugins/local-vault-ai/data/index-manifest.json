@@ -3,7 +3,7 @@
   "embeddingProvider": "local",
   "embeddingIdentity": "local:onnxruntime-web:Xenova/all-MiniLM-L6-v2:model_quantized:max256:attention-mask-mean-pooling:l2-normalized:v1",
   "embeddingDimensions": 384,
-  "lastIndexedAt": "2026-09-14T01:14:45.462Z",
+  "lastIndexedAt": "2026-09-14T02:32:38.472Z",
   "documents": {
     "6 - Full Notes/C# Variable Declaration.md": {
       "hash": "0b8461bf8e89a5572a2d67cc1fe6fd1f8f00da4303e5385dd4c4f4eb93d3184f",
@@ -137,18 +137,6 @@
       "fileName": "C# Properties and Indexers.md",
       "title": "C# Properties and Indexers"
     },
-    "6 - Full Notes/C# Preprocessor Directive.md": {
-      "hash": "2b6203518f1462025831abae16114a343be14de29985f9b0f1b83e7308dc57e3",
-      "mtime": 1788918539124,
-      "chunkIds": [
-        "6 - Full Notes/C# Preprocessor Directive.md::0",
-        "6 - Full Notes/C# Preprocessor Directive.md::1",
-        "6 - Full Notes/C# Preprocessor Directive.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Preprocessor Directive.md",
-      "title": "C# Preprocessor Directive"
-    },
     "6 - Full Notes/C# Polymorphism and Overrides.md": {
       "hash": "70f8b660d37fe8969de50060474f777a3509abf67f689577aba9f16233622b73",
       "mtime": 1788918536588,
@@ -160,6 +148,18 @@
       "sourceType": "markdown",
       "fileName": "C# Polymorphism and Overrides.md",
       "title": "C# Polymorphism and Overrides"
+    },
+    "6 - Full Notes/C# Preprocessor Directive.md": {
+      "hash": "2b6203518f1462025831abae16114a343be14de29985f9b0f1b83e7308dc57e3",
+      "mtime": 1788918539124,
+      "chunkIds": [
+        "6 - Full Notes/C# Preprocessor Directive.md::0",
+        "6 - Full Notes/C# Preprocessor Directive.md::1",
+        "6 - Full Notes/C# Preprocessor Directive.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Preprocessor Directive.md",
+      "title": "C# Preprocessor Directive"
     },
     "6 - Full Notes/C# Pattern Matching.md": {
       "hash": "b59bc24ee1339f8c142f71b61f18c202d9219cec2bc7327decd7e8860b64f1da",
@@ -197,18 +197,6 @@
       "fileName": "C# Optional and Named Arguments.md",
       "title": "C# Optional and Named Arguments"
     },
-    "6 - Full Notes/C# Method Overloading.md": {
-      "hash": "71c97303c89c46231ca4ecebb43c386fc225cddfd71305c51dbd8806307be3a1",
-      "mtime": 1788918530269,
-      "chunkIds": [
-        "6 - Full Notes/C# Method Overloading.md::0",
-        "6 - Full Notes/C# Method Overloading.md::1",
-        "6 - Full Notes/C# Method Overloading.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Method Overloading.md",
-      "title": "C# Method Overloading"
-    },
     "6 - Full Notes/C# Numeric Types.md": {
       "hash": "74d265bd65f03fea02fff81ec05daf8203d64f71be8933740bcdfe6ced5e7cf2",
       "mtime": 1788918531509,
@@ -220,6 +208,18 @@
       "sourceType": "markdown",
       "fileName": "C# Numeric Types.md",
       "title": "C# Numeric Types"
+    },
+    "6 - Full Notes/C# Method Overloading.md": {
+      "hash": "71c97303c89c46231ca4ecebb43c386fc225cddfd71305c51dbd8806307be3a1",
+      "mtime": 1788918530269,
+      "chunkIds": [
+        "6 - Full Notes/C# Method Overloading.md::0",
+        "6 - Full Notes/C# Method Overloading.md::1",
+        "6 - Full Notes/C# Method Overloading.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Method Overloading.md",
+      "title": "C# Method Overloading"
     },
     "6 - Full Notes/C# Language Version.md": {
       "hash": "db2555dcdf5c084cd8b5038cc48bf48c00df3991503a9b9b69766f1b4eb17c6e",
@@ -269,18 +269,6 @@
       "fileName": "C# If Statements.md",
       "title": "C# If Statements"
     },
-    "6 - Full Notes/C# Function Parameters.md": {
-      "hash": "dca90abe50fe57d386a4f79d80c3fa58713daffc7fd41e4b8de6bd5979d7b128",
-      "mtime": 1788918523979,
-      "chunkIds": [
-        "6 - Full Notes/C# Function Parameters.md::0",
-        "6 - Full Notes/C# Function Parameters.md::1",
-        "6 - Full Notes/C# Function Parameters.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Function Parameters.md",
-      "title": "C# Function Parameters"
-    },
     "6 - Full Notes/C# Grammar and Vocabulary.md": {
       "hash": "1ccb7d5678ca14581159c513eb3ddba9731b87d226054b3ad4b1d1dcd4e8cf57",
       "mtime": 1788918522713,
@@ -292,6 +280,18 @@
       "sourceType": "markdown",
       "fileName": "C# Grammar and Vocabulary.md",
       "title": "C# Grammar and Vocabulary"
+    },
+    "6 - Full Notes/C# Function Parameters.md": {
+      "hash": "dca90abe50fe57d386a4f79d80c3fa58713daffc7fd41e4b8de6bd5979d7b128",
+      "mtime": 1788918523979,
+      "chunkIds": [
+        "6 - Full Notes/C# Function Parameters.md::0",
+        "6 - Full Notes/C# Function Parameters.md::1",
+        "6 - Full Notes/C# Function Parameters.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Function Parameters.md",
+      "title": "C# Function Parameters"
     },
     "6 - Full Notes/C# Fields and Access Modifiers.md": {
       "hash": "5f61d6ae3b8967fb1881dcd264247d0b320fa371dfc1035a5b7e0a5a27f40232",
@@ -401,18 +401,6 @@
       "fileName": "C# Checked Arithmetic.md",
       "title": "C# Checked Arithmetic"
     },
-    "6 - Full Notes/C# Casting and Conversion.md": {
-      "hash": "7d53d3ec858e236d36a72385ec7a6aefe6ea6d620f2197ee25f0534095ca2228",
-      "mtime": 1788918510054,
-      "chunkIds": [
-        "6 - Full Notes/C# Casting and Conversion.md::0",
-        "6 - Full Notes/C# Casting and Conversion.md::1",
-        "6 - Full Notes/C# Casting and Conversion.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Casting and Conversion.md",
-      "title": "C# Casting and Conversion"
-    },
     "6 - Full Notes/C# Boolean Type.md": {
       "hash": "15f05dbb7c7f3236209399a75e295a9ed5d8fa3994d3777f1dde2474e2e56090",
       "mtime": 1788918506264,
@@ -425,17 +413,17 @@
       "fileName": "C# Boolean Type.md",
       "title": "C# Boolean Type"
     },
-    "6 - Full Notes/C# Bitwise and Shift Operators.md": {
-      "hash": "89ae599d02c593231750b488927880acaa5f541eea059cd0b0b365b046a7e29a",
-      "mtime": 1788918507555,
+    "6 - Full Notes/C# Casting and Conversion.md": {
+      "hash": "7d53d3ec858e236d36a72385ec7a6aefe6ea6d620f2197ee25f0534095ca2228",
+      "mtime": 1788918510054,
       "chunkIds": [
-        "6 - Full Notes/C# Bitwise and Shift Operators.md::0",
-        "6 - Full Notes/C# Bitwise and Shift Operators.md::1",
-        "6 - Full Notes/C# Bitwise and Shift Operators.md::2"
+        "6 - Full Notes/C# Casting and Conversion.md::0",
+        "6 - Full Notes/C# Casting and Conversion.md::1",
+        "6 - Full Notes/C# Casting and Conversion.md::2"
       ],
       "sourceType": "markdown",
-      "fileName": "C# Bitwise and Shift Operators.md",
-      "title": "C# Bitwise and Shift Operators"
+      "fileName": "C# Casting and Conversion.md",
+      "title": "C# Casting and Conversion"
     },
     "6 - Full Notes/C# Async and Await.md": {
       "hash": "767e980f3cda888ee11f6d88f159fe1fb1765c7cafde22bf3e3d8e03bb6d5f9d",
@@ -448,6 +436,18 @@
       "sourceType": "markdown",
       "fileName": "C# Async and Await.md",
       "title": "C# Async and Await"
+    },
+    "6 - Full Notes/C# Bitwise and Shift Operators.md": {
+      "hash": "89ae599d02c593231750b488927880acaa5f541eea059cd0b0b365b046a7e29a",
+      "mtime": 1788918507555,
+      "chunkIds": [
+        "6 - Full Notes/C# Bitwise and Shift Operators.md::0",
+        "6 - Full Notes/C# Bitwise and Shift Operators.md::1",
+        "6 - Full Notes/C# Bitwise and Shift Operators.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Bitwise and Shift Operators.md",
+      "title": "C# Bitwise and Shift Operators"
     },
     "6 - Full Notes/C# Assignment and Logical Operators.md": {
       "hash": "708b670f5cf023f478af057b36e7e68f815efb07dfbed571f11fbc4c0d23a68e",

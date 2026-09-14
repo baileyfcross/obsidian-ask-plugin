@@ -2,18 +2,21 @@ import {
   ItemView,
   MarkdownRenderer,
   Notice,
-  TFile,
   WorkspaceLeaf,
 } from "obsidian";
 import type LocalVaultAIPlugin from "../main";
 import {
   Conversation,
   ConversationMessage,
+  ConversationSource,
   IndexStatus,
 } from "../types";
 import {
   RagStreamStage,
 } from "../rag/RagService";
+import {
+  SourceNavigator,
+} from "./SourceNavigator";
 
 export const VIEW_TYPE_LOCAL_VAULT_AI =
   "local-vault-ai-view";
@@ -58,12 +61,20 @@ export class LocalVaultAIView
     | (() => void)
     | null = null;
 
+  private readonly sourceNavigator:
+    SourceNavigator;
+
   constructor(
     leaf: WorkspaceLeaf,
     private readonly localPlugin:
       LocalVaultAIPlugin,
   ) {
     super(leaf);
+
+    this.sourceNavigator =
+      new SourceNavigator(
+        this.app,
+      );
   }
 
   getViewType(): string {
@@ -668,26 +679,112 @@ export class LocalVaultAIView
             },
           );
 
-        button.onclick =
-          async () => {
-            const file =
-              this.app.vault
-                .getAbstractFileByPath(
-                  source.filePath,
-                );
+        const navigationTarget =
+          this.sourceNavigator
+            .buildTarget(
+              source,
+            );
 
+        button.setAttribute(
+          "title",
+          navigationTarget
+            .description +
+            " · Ctrl/Cmd-click or middle-click opens in a new tab",
+        );
+
+        button.setAttribute(
+          "aria-label",
+          navigationTarget
+            .description,
+        );
+
+        /*
+         * Left click:
+         *   open the precise citation location.
+         *
+         * Ctrl/Cmd-click:
+         *   open in a new Obsidian leaf/tab.
+         *
+         * Middle click:
+         *   also open in a new leaf/tab.
+         */
+        button.addEventListener(
+          "click",
+          (event) => {
+            event.preventDefault();
+
+            void this
+              .openSourceCitation(
+                source,
+                event,
+              );
+          },
+        );
+
+        button.addEventListener(
+          "auxclick",
+          (event) => {
             if (
-              file instanceof
-              TFile
+              event.button !==
+              1
             ) {
-              await this.app
-                .workspace
-                .getLeaf(false)
-                .openFile(file);
+              return;
             }
-          };
+
+            event.preventDefault();
+
+            void this
+              .openSourceCitation(
+                source,
+                event,
+              );
+          },
+        );
+
+        /*
+         * Give Obsidian's native hover-link system the
+         * same precise target. This allows the normal
+         * link-preview behavior when enabled.
+         */
+        button.addEventListener(
+          "mouseover",
+          (event) => {
+            this.app.workspace
+              .trigger(
+                "hover-link",
+                {
+                  event,
+                  source:
+                    "local-vault-ai",
+                  hoverParent:
+                    this,
+                  targetEl:
+                    button,
+                  linktext:
+                    navigationTarget
+                      .linkText,
+                  sourcePath:
+                    "",
+                },
+              );
+          },
+        );
       }
     }
+  }
+
+  private async openSourceCitation(
+    source:
+      ConversationSource,
+
+    event:
+      MouseEvent,
+  ): Promise<void> {
+    await this.sourceNavigator
+      .open(
+        source,
+        event,
+      );
   }
 
   private createStreamingMessage():
@@ -1059,6 +1156,29 @@ export class LocalVaultAIView
                   }
 
                   if (
+                    info.sourceResolution ===
+                    "current-question"
+                  ) {
+                    parts.push(
+                      "source from current question",
+                    );
+                  } else if (
+                    info.sourceResolution ===
+                    "conversation-context"
+                  ) {
+                    parts.push(
+                      "source from conversation context",
+                    );
+                  } else if (
+                    info.sourceResolution ===
+                    "unresolved"
+                  ) {
+                    parts.push(
+                      "source unresolved",
+                    );
+                  }
+
+                  if (
                     info.sourceConfidence !==
                     undefined
                   ) {
@@ -1083,6 +1203,34 @@ export class LocalVaultAIView
                     );
                   }
 
+                  if (
+                    info.sourceSuggestions &&
+                    info.sourceSuggestions
+                      .length > 0
+                  ) {
+                    parts.push(
+                      `possible source: ${info.sourceSuggestions.join(", ")}`,
+                    );
+                  }
+
+                  if (
+                    info.detectedSections &&
+                    info.detectedSections
+                      .length > 0
+                  ) {
+                    const preview =
+                      info.detectedSections
+                        .slice(
+                          0,
+                          8,
+                        )
+                        .join(", ");
+
+                    parts.push(
+                      `detected sections: ${preview}`,
+                    );
+                  }
+
                   parts.push(
                     `${info.chunkCount} chunk${info.chunkCount === 1 ? "" : "s"}`,
                   );
@@ -1091,10 +1239,15 @@ export class LocalVaultAIView
                     `${info.contextCharacters.toLocaleString()} chars`,
                   );
 
+                  const prefix =
+                    info.blockedReason
+                      ? "Retrieval stopped"
+                      : "Retrieved";
+
                   streamingUi
                     .status
                     .setText(
-                      `Retrieved ${parts.join(" · ")}…`,
+                      `${prefix} · ${parts.join(" · ")}…`,
                     );
 
                   streamingUi

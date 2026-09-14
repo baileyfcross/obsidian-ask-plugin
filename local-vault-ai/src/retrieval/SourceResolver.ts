@@ -15,6 +15,7 @@ const STOP_WORDS =
     "an",
     "and",
     "book",
+    "document",
     "file",
     "in",
     "my",
@@ -22,48 +23,257 @@ const STOP_WORDS =
     "of",
     "on",
     "pdf",
+    "source",
     "the",
   ]);
 
+const CONVERSATIONAL_FILLER =
+  new Set([
+    "about",
+    "again",
+    "can",
+    "could",
+    "explain",
+    "for",
+    "how",
+    "it",
+    "me",
+    "more",
+    "please",
+    "say",
+    "section",
+    "summarize",
+    "summary",
+    "talk",
+    "talks",
+    "tell",
+    "that",
+    "this",
+    "what",
+    "would",
+    "you",
+  ]);
+
+/**
+ * Extract the user's natural-language source/book name.
+ *
+ * Supported examples include:
+ *
+ *   What does Foundations of Computing say for section 1.5?
+ *
+ *   section 1.5 of Foundations of Computation
+ *
+ *   section 1.5 in my Foundations of Computation book
+ *
+ *   Can you explain what section 1.5 talks about in my
+ *   Foundations of Computation book?
+ *
+ *   What is section 1.5 about from the Foundations of
+ *   Computation PDF?
+ *
+ *   In my Foundations of Computation book, explain
+ *   section 1.5.
+ *
+ * Follow-ups that do not name a source intentionally
+ * return null so RagService can inherit a recent source:
+ *
+ *   What about section 1.5 again?
+ */
 export function extractRequestedSourcePhrase(
   question: string,
 ): string | null {
+  const trimmed =
+    question.trim();
+
   /*
-   * Prefer an explicit "what does X say/talk/cover"
-   * shape when present.
+   * Strongest signal: the user explicitly says
+   * "my/the <title> book/pdf/note/document/file".
+   *
+   * This handles conversational wording where the
+   * source appears well after the numbered section:
+   *
+   *   section 1.5 talks about in my
+   *   Foundations of Computation book
    */
-  const direct =
-    question.match(
-      /^\s*what\s+does\s+(?:(?:my|the)\s+(?:book|pdf|note|file)\s+)?(.+?)\s+(?:say|says|talk|talks|cover|covers|mention|mentions)\b/i,
+  const namedDocument =
+    trimmed.match(
+      /\b(?:my|the)\s+(.{4,180}?)\s+(?:book|pdf|note|document|file)\b/i,
     );
 
-  if (direct?.[1]) {
-    return cleanPhrase(
-      direct[1],
-    );
+  if (
+    namedDocument?.[1]
+  ) {
+    const cleaned =
+      cleanPhrase(
+        namedDocument[1],
+      );
+
+    if (cleaned) {
+      return cleaned;
+    }
   }
 
   /*
-   * Remove an explicit section suffix before the
-   * generic cleanup. This keeps version numbers in
-   * filenames from being mistaken for section ids.
+   * Section followed later by a source preposition.
+   *
+   * The bounded middle portion deliberately permits
+   * conversational words:
+   *
+   *   section 1.5 talks about in my <source>
+   *   section 1.5 is about from <source>
+   *
+   * but does not cross sentence punctuation.
+   */
+  const sectionThenSource =
+    trimmed.match(
+      /\b(?:section|sec\.?|§)\s*\d+(?:\.\d+){1,4}\b[^?.!]{0,120}?\b(?:in|from|of)\s+(?:(?:my|the)\s+)?(.+?)(?:\s+(?:book|pdf|note|document|file))?(?:[?.!]|$)/i,
+    );
+
+  if (
+    sectionThenSource?.[1]
+  ) {
+    const cleaned =
+      cleanPhrase(
+        sectionThenSource[1],
+      );
+
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  /*
+   * Simple section-first phrasing:
+   *
+   *   section 1.5 of Foundations of Computing
+   *   section 1.5 in Foundations of Computing
+   *
+   * Kept separately because it is a very common,
+   * high-confidence pattern.
+   */
+  const sectionFirst =
+    trimmed.match(
+      /\b(?:section|sec\.?|§)\s*\d+(?:\.\d+){1,4}\s+(?:of|from|in)\s+(.+?)(?:[?.!]|$)/i,
+    );
+
+  if (
+    sectionFirst?.[1]
+  ) {
+    const cleaned =
+      cleanPhrase(
+        sectionFirst[1],
+      );
+
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  /*
+   * Direct "what does <source> say..." phrasing.
+   */
+  const direct =
+    trimmed.match(
+      /^\s*(?:can\s+you\s+)?what\s+does\s+(?:(?:my|the)\s+(?:book|pdf|note|file|document)\s+)?(.+?)\s+(?:say|says|talk|talks|cover|covers|mention|mentions)\b/i,
+    );
+
+  if (
+    direct?.[1]
+  ) {
+    const cleaned =
+      cleanPhrase(
+        direct[1],
+      );
+
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  /*
+   * "in/from <source>, section 1.5 ..."
+   */
+  const inSource =
+    trimmed.match(
+      /^\s*(?:in|from|according\s+to)\s+(?:(?:my|the)\s+)?(.+?)(?:,\s*|\s+)(?:what\s+(?:does|is)|section|sec\.?|§|explain|summarize)\b/i,
+    );
+
+  if (
+    inSource?.[1]
+  ) {
+    const cleaned =
+      cleanPhrase(
+        inSource[1],
+      );
+
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  /*
+   * Title-before-section wording without a document
+   * noun:
+   *
+   *   Foundations of Computation section 1.5
+   *
+   * Keep this conservative by requiring the text before
+   * "section" to contain at least one meaningful token
+   * after conversational framing has been removed.
+   */
+  const titleBeforeSection =
+    trimmed.match(
+      /^(.+?)\s+(?:section|sec\.?|§)\s*\d+(?:\.\d+){1,4}\b/i,
+    );
+
+  if (
+    titleBeforeSection?.[1]
+  ) {
+    let candidate =
+      titleBeforeSection[1]
+        .replace(
+          /^\s*(?:can\s+you\s+)?(?:please\s+)?(?:explain|summarize|tell\s+me\s+about|what\s+about)\s+/i,
+          "",
+        )
+        .trim();
+
+    const cleaned =
+      cleanPhrase(
+        candidate,
+      );
+
+    if (cleaned) {
+      return cleaned;
+    }
+  }
+
+  /*
+   * Generic fallback:
+   * remove an explicit section suffix and then strip
+   * common question/action framing.
+   *
+   * This intentionally returns null for:
+   *
+   *   "What about section 1.5 again?"
+   *
+   * so conversation source carry-forward can run.
    */
   const sectionMatch =
-    question.match(
+    trimmed.match(
       /\b(?:section|sec\.?)\s+\d+(?:\.\d+){1,4}\b/i,
     ) ??
-    question.match(
+    trimmed.match(
       /§\s*\d+(?:\.\d+){1,4}\b/i,
     );
 
   let working =
     sectionMatch?.index !==
     undefined
-      ? question.slice(
+      ? trimmed.slice(
           0,
           sectionMatch.index,
         )
-      : question;
+      : trimmed;
 
   working =
     working
@@ -75,20 +285,16 @@ export function extractRequestedSourcePhrase(
 
   working =
     working.replace(
-      /^\s*(?:what\s+does|what\s+do|what\s+is\s+in|according\s+to|from|in)\s+/i,
+      /^\s*(?:can\s+you\s+)?(?:please\s+)?(?:what\s+does|what\s+do|what\s+is\s+in|according\s+to|from|in|explain|summarize|tell\s+me\s+about)\s+/i,
       "",
     );
 
   working =
     working.replace(
-      /^\s*(?:(?:my|the)\s+)?(?:book|pdf|note|file)\s+/i,
+      /^\s*(?:(?:my|the)\s+)?(?:book|pdf|note|file|document)\s+/i,
       "",
     );
 
-  /*
-   * Remove a trailing action phrase:
-   * "say for", "talk about", "cover", etc.
-   */
   working =
     working.replace(
       /\s+(?:say|says|talk|talks|cover|covers|mention|mentions)\b.*$/i,
@@ -100,6 +306,14 @@ export function extractRequestedSourcePhrase(
   );
 }
 
+/**
+ * Terms used only to discover possible indexed source
+ * candidates. Final acceptance uses scoreSourceCandidate.
+ *
+ * Both original tokens and canonical stems are included,
+ * so "computing" can discover "computation" even when the
+ * index contains only one of those forms.
+ */
 export function buildSourceSearchTerms(
   question: string,
 ): string[] {
@@ -117,30 +331,65 @@ export function buildSourceSearchTerms(
       phrase,
     );
 
-  const terms =
-    normalized
-      .split(" ")
+  const tokens =
+    significantTokens(
+      normalized,
+    );
+
+  const stems =
+    tokens
+      .map(
+        canonicalToken,
+      )
       .filter(
         (token) =>
-          token.length >= 4 &&
-          !STOP_WORDS.has(
-            token,
-          ),
+          token.length >= 4,
+      );
+
+  const prefixes =
+    stems
+      .filter(
+        (token) =>
+          token.length >= 6,
       )
-      .sort(
-        (a, b) =>
-          b.length -
-          a.length,
+      .map(
+        (token) =>
+          token.slice(
+            0,
+            6,
+          ),
       );
 
   return Array.from(
     new Set([
       normalized,
-      ...terms.slice(0, 5),
+      ...tokens,
+      ...stems,
+      ...prefixes,
     ]),
-  );
+  )
+    .filter(Boolean)
+    .sort(
+      (left, right) =>
+        right.length -
+        left.length,
+    )
+    .slice(
+      0,
+      12,
+    );
 }
 
+/**
+ * Fuzzy source-name score.
+ *
+ * The token score is intentionally strong enough that:
+ *
+ *   Foundations of Computing
+ *   Foundations of Computation
+ *
+ * are treated as a near-exact title match.
+ */
 export function scoreSourceCandidate(
   question: string,
   candidate:
@@ -171,7 +420,10 @@ export function scoreSourceCandidate(
 
   let best = 0;
 
-  for (const name of names) {
+  for (
+    const name of
+    names
+  ) {
     const normalized =
       normalizeSourceName(
         name,
@@ -185,7 +437,8 @@ export function scoreSourceCandidate(
     }
 
     if (
-      requested === normalized
+      requested ===
+      normalized
     ) {
       best =
         Math.max(
@@ -194,6 +447,28 @@ export function scoreSourceCandidate(
         );
 
       continue;
+    }
+
+    const requestedCanonical =
+      canonicalPhrase(
+        requested,
+      );
+
+    const candidateCanonical =
+      canonicalPhrase(
+        normalized,
+      );
+
+    if (
+      requestedCanonical &&
+      requestedCanonical ===
+        candidateCanonical
+    ) {
+      best =
+        Math.max(
+          best,
+          99,
+        );
     }
 
     if (
@@ -244,25 +519,16 @@ export function scoreSourceCandidate(
         normalized,
       );
 
-    /*
-     * Token matching treats long words with a
-     * common six-character stem as equivalent.
-     * This intentionally handles:
-     *
-     * computer / computation
-     *
-     * without requiring a model call to resolve
-     * the source filename.
-     */
     const blended =
-      edit * 0.45 +
-      token * 0.40 +
+      edit * 0.35 +
+      token * 0.50 +
       prefix * 0.15;
 
     best =
       Math.max(
         best,
         edit * 100,
+        token * 96,
         blended * 100,
       );
   }
@@ -333,11 +599,49 @@ function cleanPhrase(
         /^[\s"'`]+|[\s"'`,:;]+$/g,
         "",
       )
+      .replace(
+        /^(?:my|the)\s+/i,
+        "",
+      )
+      .replace(
+        /\s+(?:book|pdf|note|file|document)\s*$/i,
+        "",
+      )
       .trim();
 
-  return cleaned.length >= 4
-    ? cleaned
-    : null;
+  if (
+    cleaned.length < 4
+  ) {
+    return null;
+  }
+
+  const normalized =
+    normalizeSourceName(
+      cleaned,
+    );
+
+  const meaningful =
+    normalized
+      .split(" ")
+      .filter(
+        (token) =>
+          token.length >= 3 &&
+          !STOP_WORDS.has(
+            token,
+          ) &&
+          !CONVERSATIONAL_FILLER.has(
+            token,
+          ),
+      );
+
+  if (
+    meaningful.length ===
+    0
+  ) {
+    return null;
+  }
+
+  return cleaned;
 }
 
 function isFileSuffixToken(
@@ -354,6 +658,76 @@ function isFileSuffixToken(
       token,
     )
   );
+}
+
+function canonicalPhrase(
+  value: string,
+): string {
+  return significantTokens(
+    value,
+  )
+    .map(
+      canonicalToken,
+    )
+    .join(" ");
+}
+
+function significantTokens(
+  value: string,
+): string[] {
+  return value
+    .split(" ")
+    .filter(
+      (token) =>
+        token.length >= 3 &&
+        !STOP_WORDS.has(
+          token,
+        ),
+    );
+}
+
+function canonicalToken(
+  token: string,
+): string {
+  const normalized =
+    token
+      .toLowerCase()
+      .replace(
+        /[^a-z0-9]/g,
+        "",
+      );
+
+  /*
+   * computer / computing / computation /
+   * computational -> comput
+   */
+  if (
+    /^comput/.test(
+      normalized,
+    )
+  ) {
+    return "comput";
+  }
+
+  /*
+   * Light title-word plural normalization.
+   */
+  if (
+    normalized.length > 5 &&
+    normalized.endsWith(
+      "s",
+    ) &&
+    !normalized.endsWith(
+      "ss",
+    )
+  ) {
+    return normalized.slice(
+      0,
+      -1,
+    );
+  }
+
+  return normalized;
 }
 
 function softTokenDice(
@@ -422,35 +796,40 @@ function softTokenDice(
   );
 }
 
-function significantTokens(
-  value: string,
-): string[] {
-  return value
-    .split(" ")
-    .filter(
-      (token) =>
-        token.length >= 3 &&
-        !STOP_WORDS.has(
-          token,
-        ),
-    );
-}
-
 function tokensEquivalent(
   left: string,
   right: string,
 ): boolean {
-  if (left === right) {
+  const leftCanonical =
+    canonicalToken(
+      left,
+    );
+
+  const rightCanonical =
+    canonicalToken(
+      right,
+    );
+
+  if (
+    leftCanonical ===
+    rightCanonical
+  ) {
     return true;
   }
 
   if (
-    left.length >= 6 &&
-    right.length >= 6
+    leftCanonical.length >= 6 &&
+    rightCanonical.length >= 6
   ) {
     return (
-      left.slice(0, 6) ===
-      right.slice(0, 6)
+      leftCanonical.slice(
+        0,
+        6,
+      ) ===
+      rightCanonical.slice(
+        0,
+        6,
+      )
     );
   }
 
@@ -486,7 +865,9 @@ function normalizedLevenshtein(
   left: string,
   right: string,
 ): number {
-  if (left === right) {
+  if (
+    left === right
+  ) {
     return 1;
   }
 
@@ -519,10 +900,12 @@ function normalizedLevenshtein(
 
   for (
     let row = 1;
-    row <= left.length;
+    row <=
+    left.length;
     row += 1
   ) {
-    current[0] = row;
+    current[0] =
+      row;
 
     for (
       let column = 1;

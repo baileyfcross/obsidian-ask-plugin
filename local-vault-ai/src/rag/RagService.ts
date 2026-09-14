@@ -20,6 +20,9 @@ import {
   RagAnswer,
   RetrievedChunk,
 } from "../types";
+import {
+  extractRequestedSourcePhrase,
+} from "../retrieval/SourceResolver";
 
 export type RagStreamStage =
   | "retrieving"
@@ -31,18 +34,31 @@ export type RagRetrievalMode =
   | "source"
   | "hybrid";
 
+export type SourceResolutionOrigin =
+  | "current-question"
+  | "conversation-context"
+  | "unresolved";
+
 export interface RagRetrievalInfo {
   mode:
     RagRetrievalMode;
 
   sourceFile?: string;
   sourceConfidence?: number;
+  sourceResolution?:
+    SourceResolutionOrigin;
 
   section?: string;
   sectionTitle?: string;
 
   chunkCount: number;
   contextCharacters: number;
+
+  blockedReason?: string;
+
+  sourceSuggestions?: string[];
+
+  detectedSections?: string[];
 }
 
 export interface RagStreamCallbacks {
@@ -158,22 +174,111 @@ export class RagService {
         "retrieving",
       );
 
-      const requestedSource =
-        await this.index
-          .resolveSourceReference(
-            question,
-          );
-
       const requestedSection =
         this.extractSectionIdentifier(
           question,
         );
 
+      const sourceResolution =
+        await this
+          .resolveRequestedSource(
+            question,
+            history,
+          );
+
+      const requestedSource =
+        sourceResolution.source;
+
       /*
-       * Explicit source + explicit section is now an
-       * exact metadata lookup. Do not silently fall
-       * back to unrelated semantic matches if the
-       * section was not identified during indexing.
+       * EXPLICIT SECTION REQUESTS FAIL CLOSED.
+       *
+       * A request such as "section 1.5" must never fall
+       * through to whole-vault semantic retrieval when
+       * the source cannot be identified. That was the
+       * behavior that allowed unrelated C# chunks to
+       * reach GPT-OSS.
+       */
+      if (
+        requestedSection &&
+        !requestedSource
+      ) {
+        const explicitPhrase =
+          extractRequestedSourcePhrase(
+            question,
+          );
+
+        const suggestions =
+          explicitPhrase
+            ? await this.index
+                .findSourceSuggestions(
+                  question,
+                  3,
+                )
+            : [];
+
+        const suggestionNames =
+          suggestions.map(
+            (source) =>
+              `${source.fileName} (${source.confidence}%)`,
+          );
+
+        callbacks
+          ?.onRetrievalInfo?.({
+            mode:
+              "section",
+
+            sourceResolution:
+              "unresolved",
+
+            section:
+              requestedSection,
+
+            chunkCount: 0,
+
+            contextCharacters:
+              0,
+
+            blockedReason:
+              "source-unresolved",
+
+            sourceSuggestions:
+              suggestionNames,
+          });
+
+        let answer =
+          explicitPhrase
+            ? `I detected a request for section ${requestedSection}, but I could not confidently match ` +
+              `"${explicitPhrase}" to one indexed source.`
+            : `I detected a request for section ${requestedSection}, but I could not determine which indexed source you mean.`;
+
+        if (
+          suggestionNames.length >
+          0
+        ) {
+          answer +=
+            ` Possible matches: ${suggestionNames.join(", ")}.`;
+        }
+
+        answer +=
+          " I did not search the rest of the vault or substitute unrelated sources.";
+
+        callbacks?.onStage?.(
+          "answering",
+        );
+
+        callbacks?.onAnswer?.(
+          answer,
+        );
+
+        return {
+          answer,
+          sources: [],
+        };
+      }
+
+      /*
+       * Source + explicit section uses exact section
+       * metadata only.
        */
       if (
         requestedSource &&
@@ -194,6 +299,27 @@ export class RagService {
           exactSection.length ===
           0
         ) {
+          const detected =
+            await this.index
+              .listSectionsInSource(
+                requestedSource
+                  .filePath,
+                120,
+              );
+
+          const detectedLabels =
+            detected
+              .slice(
+                0,
+                24,
+              )
+              .map(
+                (section) =>
+                  section.title
+                    ? `${section.number} ${section.title}`
+                    : section.number,
+              );
+
           callbacks
             ?.onRetrievalInfo?.({
               mode:
@@ -207,18 +333,40 @@ export class RagService {
                 requestedSource
                   .confidence,
 
+              sourceResolution:
+                sourceResolution
+                  .origin,
+
               section:
                 requestedSection,
 
               chunkCount: 0,
+
               contextCharacters:
                 0,
+
+              blockedReason:
+                "section-not-indexed",
+
+              detectedSections:
+                detectedLabels,
             });
 
-          const answer =
-            `I found the requested source "${requestedSource.fileName}", ` +
-            `but section ${requestedSection} was not identified in its indexed PDF section metadata. ` +
+          let answer =
+            `I resolved the requested source to "${requestedSource.fileName}", ` +
+            `but section ${requestedSection} was not found in that source's indexed section metadata. ` +
             "I did not substitute unrelated pages.";
+
+          if (
+            detectedLabels.length >
+            0
+          ) {
+            answer +=
+              ` Detected section metadata includes: ${detectedLabels.join(", ")}.`;
+          } else {
+            answer +=
+              " No numbered section metadata was detected for this source, which points to a PDF section-parsing/indexing problem.";
+          }
 
           callbacks?.onStage?.(
             "answering",
@@ -258,6 +406,10 @@ export class RagService {
 
             source:
               requestedSource,
+
+            sourceResolution:
+              sourceResolution
+                .origin,
 
             section:
               requestedSection,
@@ -356,6 +508,12 @@ export class RagService {
 
           source:
             requestedSource,
+
+          sourceResolution:
+            requestedSource
+              ? sourceResolution
+                  .origin
+              : undefined,
 
           section:
             requestedSection ??
@@ -592,6 +750,9 @@ export class RagService {
       source:
         ResolvedSource | null;
 
+      sourceResolution?:
+        SourceResolutionOrigin;
+
       section?:
         string;
 
@@ -626,6 +787,9 @@ export class RagService {
         sourceConfidence:
           data.source
             ?.confidence,
+
+        sourceResolution:
+          data.sourceResolution,
 
         section:
           data.section,
@@ -684,6 +848,194 @@ export class RagService {
     }
 
     return selected;
+  }
+
+  private async resolveRequestedSource(
+    question: string,
+    history:
+      ConversationMessage[],
+  ): Promise<{
+    source:
+      ResolvedSource | null;
+
+    origin:
+      SourceResolutionOrigin;
+  }> {
+    /*
+     * Current question always wins.
+     */
+    const current =
+      await this.index
+        .resolveSourceReference(
+          question,
+        );
+
+    if (current) {
+      return {
+        source:
+          current,
+
+        origin:
+          "current-question",
+      };
+    }
+
+    /*
+     * If the current question contains an explicit
+     * source phrase but it could not be resolved,
+     * do NOT silently inherit some different source
+     * from prior context.
+     */
+    const currentPhrase =
+      extractRequestedSourcePhrase(
+        question,
+      );
+
+    if (currentPhrase) {
+      return {
+        source:
+          null,
+
+        origin:
+          "unresolved",
+      };
+    }
+
+    /*
+     * Follow-up questions such as:
+     *
+     *   "What about section 1.5 again?"
+     *
+     * may inherit a source from recent USER messages.
+     * Prefer user wording over assistant citations,
+     * since a prior bad retrieval may itself have
+     * produced unrelated assistant sources.
+     */
+    const recentUserMessages =
+      history
+        .filter(
+          (message) =>
+            message.role ===
+            "user",
+        )
+        .slice(-6)
+        .reverse();
+
+    for (
+      const message of
+      recentUserMessages
+    ) {
+      const resolved =
+        await this.index
+          .resolveSourceReference(
+            message.content,
+          );
+
+      if (resolved) {
+        return {
+          source:
+            resolved,
+
+          origin:
+            "conversation-context",
+        };
+      }
+    }
+
+    /*
+     * Last-resort conversational carry-forward:
+     * only use an assistant turn when its citations
+     * point to exactly ONE unique file.
+     */
+    const recentAssistantMessages =
+      history
+        .filter(
+          (message) =>
+            message.role ===
+              "assistant" &&
+            Boolean(
+              message.sources
+                ?.length,
+            ),
+        )
+        .slice(-4)
+        .reverse();
+
+    for (
+      const message of
+      recentAssistantMessages
+    ) {
+      const paths =
+        Array.from(
+          new Set(
+            (
+              message.sources ??
+              []
+            )
+              .map(
+                (source) =>
+                  source.filePath,
+              )
+              .filter(Boolean),
+          ),
+        );
+
+      if (
+        paths.length !==
+        1
+      ) {
+        continue;
+      }
+
+      const filePath =
+        paths[0];
+
+      if (!filePath) {
+        continue;
+      }
+
+      const fileName =
+        filePath
+          .split("/")
+          .pop() ??
+        filePath;
+
+      return {
+        source: {
+          filePath,
+          fileName,
+
+          title:
+            fileName.replace(
+              /\.(?:pdf|md)$/i,
+              "",
+            ),
+
+          sourceType:
+            fileName
+              .toLowerCase()
+              .endsWith(
+                ".pdf",
+              )
+              ? "pdf"
+              : "markdown",
+
+          confidence:
+            100,
+        },
+
+        origin:
+          "conversation-context",
+      };
+    }
+
+    return {
+      source:
+        null,
+
+      origin:
+        "unresolved",
+    };
   }
 
   private extractSectionIdentifier(

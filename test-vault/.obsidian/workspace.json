@@ -4,17 +4,19 @@
     "type": "split",
     "children": [
       {
-        "id": "b6c4c4e48007bd45",
+        "id": "1813aee009a4b127",
         "type": "tabs",
         "children": [
           {
-            "id": "b55413d862557fd9",
+            "id": "136a0ad2c131031f",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
-              "icon": "lucide-file",
-              "title": "New tab"
+              "type": "pdf",
+              "state": {
+                "file": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf"
+              },
+              "icon": "lucide-file-text",
+              "title": "FoundationsOfComputation_2.3.2"
             }
           }
         ]
@@ -194,10 +196,10 @@
       "local-vault-ai:Open Local Vault AI": false
     }
   },
-  "active": "b55413d862557fd9",
+  "active": "136a0ad2c131031f",
   "lastOpenFiles": [
-    "2 - Source Material/css_thedefinitiveguide.pdf",
     "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
+    "2 - Source Material/css_thedefinitiveguide.pdf",
     "6 - Full Notes/Algebraic Identity.md",
     "6 - Full Notes/C# Variable Declaration.md",
     "6 - Full Notes/C# Unary and Binary Operators.md",

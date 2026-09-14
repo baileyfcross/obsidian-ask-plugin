@@ -16,6 +16,7 @@ import {
 } from "../types";
 import {
   buildSourceSearchTerms,
+  normalizeSourceName,
   scoreSourceCandidate,
   SourceCandidateDescriptor,
 } from "../retrieval/SourceResolver";
@@ -41,11 +42,19 @@ export interface ResolvedSource {
   confidence: number;
 }
 
+export interface DetectedSection {
+  number: string;
+  title: string;
+}
+
 const SOURCE_MATCH_THRESHOLD =
-  70;
+  68;
 
 const SOURCE_MATCH_MARGIN =
-  4;
+  5;
+
+const SOURCE_SUGGESTION_THRESHOLD =
+  35;
 
 export class KnowledgeIndex {
   private db:
@@ -431,15 +440,243 @@ export class KnowledgeIndex {
    * Resolve the source named in a natural-language
    * question.
    *
-   * Candidate discovery is performed against the
-   * normalized sourceSearchName field added during
-   * indexing, so CamelCase filenames are searchable.
+   * Candidate discovery is intentionally broad.
+   * Final acceptance is controlled by the dedicated
+   * fuzzy source-name scorer.
    */
   async resolveSourceReference(
     question: string,
   ): Promise<ResolvedSource | null> {
     this.assertReady();
 
+    const scored =
+      await this
+        .scoreSourceCandidates(
+          question,
+        );
+
+    const accepted =
+      scored.filter(
+        (item) =>
+          item.score >=
+          SOURCE_MATCH_THRESHOLD,
+      );
+
+    const best =
+      accepted[0];
+
+    if (!best) {
+      return null;
+    }
+
+    const second =
+      accepted[1];
+
+    if (
+      second &&
+      best.score -
+        second.score <
+        SOURCE_MATCH_MARGIN
+    ) {
+      /*
+       * Do not silently choose between similarly
+       * named books/notes.
+       */
+      return null;
+    }
+
+    return {
+      ...best.candidate,
+
+      confidence:
+        Math.round(
+          best.score,
+        ),
+    };
+  }
+
+  /**
+   * Lower-confidence source suggestions are useful when
+   * an explicit section request must fail closed.
+   */
+  async findSourceSuggestions(
+    question: string,
+    limit = 3,
+  ): Promise<ResolvedSource[]> {
+    this.assertReady();
+
+    const scored =
+      await this
+        .scoreSourceCandidates(
+          question,
+        );
+
+    return scored
+      .filter(
+        (item) =>
+          item.score >=
+          SOURCE_SUGGESTION_THRESHOLD,
+      )
+      .slice(
+        0,
+        Math.max(
+          1,
+          limit,
+        ),
+      )
+      .map(
+        (item) => ({
+          ...item.candidate,
+
+          confidence:
+            Math.round(
+              item.score,
+            ),
+        }),
+      );
+  }
+
+  /**
+   * Diagnostic helper used only when an exact numbered
+   * section was requested but no matching chunks exist.
+   *
+   * This tells us whether the PDF parser/indexer actually
+   * recorded section metadata such as 1.4, 1.5, 1.6.
+   */
+  async listSectionsInSource(
+    sourcePath: string,
+    limit = 100,
+  ): Promise<DetectedSection[]> {
+    this.assertReady();
+
+    const fileName =
+      sourcePath
+        .split("/")
+        .pop() ??
+      sourcePath;
+
+    const term =
+      normalizeSourceName(
+        fileName,
+      ) ||
+      fileName;
+
+    const results =
+      await search(
+        this.db,
+        {
+          term,
+
+          properties: [
+            "sourceSearchName",
+            "fileName",
+            "filePath",
+            "title",
+          ],
+
+          where: {
+            sourceKey: {
+              eq:
+                sourcePath,
+            },
+          },
+
+          limit:
+            5000,
+
+          includeVectors:
+            false,
+        } as any,
+      );
+
+    const sections =
+      new Map<
+        string,
+        string
+      >();
+
+    for (
+      const hit of
+      results.hits ??
+      []
+    ) {
+      const document =
+        (hit as any)
+          .document;
+
+      const number =
+        normalizeSectionNumber(
+          String(
+            document
+              .sectionNumber ??
+            "",
+          ),
+        );
+
+      if (!number) {
+        continue;
+      }
+
+      if (
+        !sections.has(
+          number,
+        )
+      ) {
+        sections.set(
+          number,
+          String(
+            document
+              .sectionTitle ??
+            "",
+          ),
+        );
+      }
+    }
+
+    return Array.from(
+      sections.entries(),
+    )
+      .map(
+        (
+          [
+            number,
+            title,
+          ],
+        ) => ({
+          number,
+          title,
+        }),
+      )
+      .sort(
+        (
+          left,
+          right,
+        ) =>
+          compareSectionNumbers(
+            left.number,
+            right.number,
+          ),
+      )
+      .slice(
+        0,
+        Math.max(
+          1,
+          limit,
+        ),
+      );
+  }
+
+  private async scoreSourceCandidates(
+    question: string,
+  ): Promise<
+    Array<{
+      candidate:
+        SourceCandidateDescriptor;
+
+      score:
+        number;
+    }>
+  > {
     const terms =
       buildSourceSearchTerms(
         question,
@@ -448,7 +685,7 @@ export class KnowledgeIndex {
     if (
       terms.length === 0
     ) {
-      return null;
+      return [];
     }
 
     const candidates =
@@ -461,6 +698,13 @@ export class KnowledgeIndex {
       const term of
       terms
     ) {
+      if (
+        !term ||
+        term.length < 4
+      ) {
+        continue;
+      }
+
       const result =
         await search(
           this.db,
@@ -474,7 +718,19 @@ export class KnowledgeIndex {
               "filePath",
             ],
 
-            limit: 80,
+            /*
+             * A small tolerance helps ordinary typos.
+             * Morphological differences are handled by
+             * source terms/scoring rather than by relying
+             * on edit distance inside Orama.
+             */
+            tolerance:
+              term.length >= 7
+                ? 1
+                : 0,
+
+            limit:
+              120,
 
             includeVectors:
               false,
@@ -533,63 +789,25 @@ export class KnowledgeIndex {
       }
     }
 
-    const scored =
-      Array.from(
-        candidates.values(),
+    return Array.from(
+      candidates.values(),
+    )
+      .map(
+        (candidate) => ({
+          candidate,
+
+          score:
+            scoreSourceCandidate(
+              question,
+              candidate,
+            ),
+        }),
       )
-        .map(
-          (candidate) => ({
-            candidate,
-
-            score:
-              scoreSourceCandidate(
-                question,
-                candidate,
-              ),
-          }),
-        )
-        .filter(
-          (item) =>
-            item.score >=
-            SOURCE_MATCH_THRESHOLD,
-        )
-        .sort(
-          (a, b) =>
-            b.score -
-            a.score,
-        );
-
-    const best =
-      scored[0];
-
-    if (!best) {
-      return null;
-    }
-
-    const second =
-      scored[1];
-
-    if (
-      second &&
-      best.score -
-        second.score <
-        SOURCE_MATCH_MARGIN
-    ) {
-      /*
-       * Do not silently pick between two similarly
-       * named books/notes.
-       */
-      return null;
-    }
-
-    return {
-      ...best.candidate,
-
-      confidence:
-        Math.round(
-          best.score,
-        ),
-    };
+      .sort(
+        (left, right) =>
+          right.score -
+          left.score,
+      );
   }
 
   private toRetrievedChunk(
@@ -744,6 +962,55 @@ function chunkIndexFromId(
         match[1],
       )
     : 0;
+}
+
+function compareSectionNumbers(
+  left: string,
+  right: string,
+): number {
+  const leftParts =
+    left
+      .split(".")
+      .map(Number);
+
+  const rightParts =
+    right
+      .split(".")
+      .map(Number);
+
+  const length =
+    Math.max(
+      leftParts.length,
+      rightParts.length,
+    );
+
+  for (
+    let index = 0;
+    index < length;
+    index += 1
+  ) {
+    const leftValue =
+      leftParts[index] ??
+      0;
+
+    const rightValue =
+      rightParts[index] ??
+      0;
+
+    if (
+      leftValue !==
+      rightValue
+    ) {
+      return (
+        leftValue -
+        rightValue
+      );
+    }
+  }
+
+  return left.localeCompare(
+    right,
+  );
 }
 
 function toSourceType(

@@ -10,6 +10,8 @@ import {
   ConversationMessage,
   ConversationSource,
   IndexStatus,
+  RagStageTimings,
+  RetrievedChunk,
 } from "../types";
 import {
   RagStreamStage,
@@ -23,12 +25,36 @@ export const VIEW_TYPE_LOCAL_VAULT_AI =
 
 interface StreamingMessageUi {
   wrapper: HTMLElement;
+  role: HTMLElement;
   status: HTMLElement;
+  timingsEl: HTMLElement;
   reasoning: HTMLDetailsElement;
   reasoningSummary: HTMLElement;
   reasoningBody: HTMLElement;
   answerBody: HTMLElement;
   copyButton: HTMLButtonElement;
+
+  /*
+   * Live elapsed-request timer state.
+   *
+   * The timer starts immediately before RAG processing
+   * and freezes when the request completes, is stopped,
+   * or fails.
+   */
+  startedAt: number;
+  timerIntervalId:
+    number | null;
+  finalElapsedMs:
+    number | null;
+
+  stageTimings:
+    RagStageTimings;
+
+  currentStage:
+    RagStreamStage;
+
+  stageStartedAt:
+    number;
 }
 
 export class LocalVaultAIView
@@ -55,6 +81,23 @@ export class LocalVaultAIView
 
   private askButton:
     | HTMLButtonElement
+    | null = null;
+
+  private stopButton:
+    | HTMLButtonElement
+    | null = null;
+
+  /*
+   * Only one chat request may be active per view.
+   * The controller is created when a request starts
+   * and cleared in submitQuestion()'s finally block.
+   */
+  private activeRequestController:
+    | AbortController
+    | null = null;
+
+  private activeStreamingUi:
+    | StreamingMessageUi
     | null = null;
 
   private unsubscribeStatus:
@@ -105,6 +148,10 @@ export class LocalVaultAIView
 
   async onClose():
     Promise<void> {
+    this.stopActiveRequest(
+      false,
+    );
+
     this.unsubscribeStatus?.();
     this.unsubscribeStatus =
       null;
@@ -348,6 +395,25 @@ export class LocalVaultAIView
           .submitQuestion();
       };
 
+    this.stopButton =
+      composeRow.createEl(
+        "button",
+        {
+          text:
+            "Stop",
+        },
+      );
+
+    this.stopButton.disabled =
+      true;
+
+    this.stopButton.onclick =
+      () => {
+        this.stopActiveRequest(
+          true,
+        );
+      };
+
     await this.ensureConversation();
     await this
       .refreshConversationSelect();
@@ -523,12 +589,22 @@ export class LocalVaultAIView
       return;
     }
 
+    const stateClass =
+      message.requestState ===
+        "error"
+        ? " local-vault-ai-message-error"
+        : message.requestState ===
+            "stopped"
+          ? " local-vault-ai-message-stopped"
+          : "";
+
     const wrapper =
       this.messagesEl
         .createDiv({
           cls:
             `local-vault-ai-message ` +
-            `local-vault-ai-message-${message.role}`,
+            `local-vault-ai-message-${message.role}` +
+            stateClass,
         });
 
     const header =
@@ -537,13 +613,47 @@ export class LocalVaultAIView
           "local-vault-ai-message-header",
       });
 
+    const baseRoleText =
+      message.role ===
+        "user"
+        ? message.requestState ===
+            "error"
+          ? "You — failed request"
+          : message.requestState ===
+              "stopped"
+            ? "You — stopped request"
+            : "You"
+        : message.requestState ===
+            "error"
+          ? "Local Vault AI — Request failed"
+          : message.requestState ===
+              "stopped"
+            ? "Local Vault AI — Stopped"
+            : "Local Vault AI";
+
+    const durationText =
+      message.role ===
+        "assistant" &&
+      typeof message
+        .generationDurationMs ===
+        "number" &&
+      Number.isFinite(
+        message
+          .generationDurationMs,
+      )
+        ? ` · ${this.formatElapsedTime(
+            message
+              .generationDurationMs,
+          )}`
+        : "";
+
     header.createDiv({
       cls:
         "local-vault-ai-message-role",
+
       text:
-        message.role === "user"
-          ? "You"
-          : "Local Vault AI",
+        baseRoleText +
+        durationText,
     });
 
     if (
@@ -554,6 +664,20 @@ export class LocalVaultAIView
         header,
         () => message.content,
       );
+
+      if (
+        message.stageTimings
+      ) {
+        wrapper.createDiv({
+          cls:
+            "local-vault-ai-stage-timings",
+
+          text:
+            this.formatStageTimings(
+              message.stageTimings,
+            ),
+        });
+      }
     }
 
     if (
@@ -787,7 +911,10 @@ export class LocalVaultAIView
       );
   }
 
-  private createStreamingMessage():
+  private createStreamingMessage(
+    startedAt:
+      number,
+  ):
     StreamingMessageUi {
     if (!this.messagesEl) {
       throw new Error(
@@ -808,12 +935,13 @@ export class LocalVaultAIView
           "local-vault-ai-message-header",
       });
 
-    header.createDiv({
-      cls:
-        "local-vault-ai-message-role",
-      text:
-        "Local Vault AI",
-    });
+    const role =
+      header.createDiv({
+        cls:
+          "local-vault-ai-message-role",
+        text:
+          "Local Vault AI · 00:00",
+      });
 
     let currentAnswer = "";
 
@@ -832,6 +960,15 @@ export class LocalVaultAIView
           "local-vault-ai-live-status",
         text:
           "Retrieving vault context…",
+      });
+
+    const timingsEl =
+      wrapper.createDiv({
+        cls:
+          "local-vault-ai-stage-timings local-vault-ai-stage-timings-live",
+
+        text:
+          "Retrieval: 0.0s · Model startup: — · Prompt processing: — · Reasoning: — · Answering: —",
       });
 
     const reasoning =
@@ -896,31 +1033,93 @@ export class LocalVaultAIView
       },
     );
 
+    const ui:
+      StreamingMessageUi = {
+      wrapper,
+      role,
+      status,
+      timingsEl,
+      reasoning,
+      reasoningSummary,
+      reasoningBody,
+      answerBody,
+      copyButton,
+
+      startedAt,
+
+      timerIntervalId:
+        null,
+
+      finalElapsedMs:
+        null,
+
+      stageTimings: {},
+
+      currentStage:
+        "retrieving",
+
+      stageStartedAt:
+        startedAt,
+    };
+
+    /*
+     * Update four times per second while displaying
+     * whole elapsed seconds. This keeps the transition
+     * to the next second visually responsive without
+     * adding meaningful overhead.
+     */
+    this.updateStreamingTimer(
+      ui,
+    );
+
+    ui.timerIntervalId =
+      window.setInterval(
+        () => {
+          this.updateStreamingTimer(
+            ui,
+          );
+        },
+        250,
+      );
+
     wrapper.addEventListener(
       "DOMNodeRemoved",
       () => {
         observer.disconnect();
+
+        if (
+          ui.timerIntervalId !==
+          null
+        ) {
+          window.clearInterval(
+            ui.timerIntervalId,
+          );
+
+          ui.timerIntervalId =
+            null;
+        }
       },
       {
         once: true,
       },
     );
 
-    return {
-      wrapper,
-      status,
-      reasoning,
-      reasoningSummary,
-      reasoningBody,
-      answerBody,
-      copyButton,
-    };
+    return ui;
   }
 
   private updateStreamingStage(
     ui: StreamingMessageUi,
     stage: RagStreamStage,
   ): void {
+    const now =
+      performance.now();
+
+    this.finalizeStageTransition(
+      ui,
+      stage,
+      now,
+    );
+
     if (
       stage === "retrieving"
     ) {
@@ -930,6 +1129,28 @@ export class LocalVaultAIView
 
       ui.status.addClass(
         "is-working",
+      );
+
+      this.updateStageTimingsDisplay(
+        ui,
+      );
+
+      return;
+    }
+
+    if (
+      stage === "model"
+    ) {
+      ui.status.setText(
+        "Starting model and processing prompt…",
+      );
+
+      ui.status.addClass(
+        "is-working",
+      );
+
+      this.updateStageTimingsDisplay(
+        ui,
       );
 
       return;
@@ -960,6 +1181,10 @@ export class LocalVaultAIView
           );
       }
 
+      this.updateStageTimingsDisplay(
+        ui,
+      );
+
       return;
     }
 
@@ -976,17 +1201,16 @@ export class LocalVaultAIView
         "Reasoning",
       );
 
-    /*
-     * Reasoning remains visible while the model
-     * works, then collapses once the final answer
-     * begins so the answer gets the focus.
-     */
     if (
       ui.reasoning.open
     ) {
       ui.reasoning.open =
         false;
     }
+
+    this.updateStageTimingsDisplay(
+      ui,
+    );
   }
 
   private addCopyButton(
@@ -1049,6 +1273,16 @@ export class LocalVaultAIView
       return;
     }
 
+    if (
+      this.activeRequestController
+    ) {
+      new Notice(
+        "A Local Vault AI request is already running. Stop it before starting another request.",
+      );
+
+      return;
+    }
+
     const question =
       this.inputEl.value.trim();
 
@@ -1072,10 +1306,23 @@ export class LocalVaultAIView
       return;
     }
 
-    const priorHistory = [
-      ...this.currentConversation
-        .messages,
-    ];
+    /*
+     * Failed turns stay visible in the conversation UI
+     * for debugging, but they must not become model
+     * context for later prompts.
+     *
+     * This preserves the earlier transactional behavior
+     * at the RAG level while still keeping the failure
+     * permanently visible to the user.
+     */
+    const priorHistory =
+      this.currentConversation
+        .messages
+        .filter(
+          (message) =>
+            message.requestState !==
+            "error",
+        );
 
     const userMessage:
       ConversationMessage = {
@@ -1090,17 +1337,29 @@ export class LocalVaultAIView
 
     /*
      * Do not persist the user message until the RAG
-     * request succeeds. A retrieval/search failure
-     * must not become conversation history, because
-     * the next short prompt would otherwise include
-     * the failed question and appear to retry it
-     * accidentally.
+     * request succeeds. A normal retrieval/search
+     * failure must not become conversation history.
+     *
+     * User cancellation is handled separately below:
+     * a deliberately stopped turn is saved so partial
+     * work remains available in the conversation.
      */
+    const requestController =
+      new AbortController();
+
+    this.activeRequestController =
+      requestController;
+
+    let latestAnswer = "";
+    let latestThinking = "";
+
+    let latestSources:
+      RetrievedChunk[] = [];
+
     this.inputEl.value = "";
-    this.askButton.disabled =
-      true;
-    this.askButton.setText(
-      "Working…",
+
+    this.setRequestControls(
+      true,
     );
 
     /*
@@ -1119,8 +1378,16 @@ export class LocalVaultAIView
       userMessage,
     );
 
+    const requestStartedAt =
+      performance.now();
+
     const streamingUi =
-      this.createStreamingMessage();
+      this.createStreamingMessage(
+        requestStartedAt,
+      );
+
+    this.activeStreamingUi =
+      streamingUi;
 
     this.scrollToBottom();
 
@@ -1184,6 +1451,18 @@ export class LocalVaultAIView
                   ) {
                     parts.push(
                       `source match ${Math.round(info.sourceConfidence)}%`,
+                    );
+                  }
+
+                  if (
+                    info.generationMode &&
+                    info.generationModel
+                  ) {
+                    parts.push(
+                      info.generationMode ===
+                        "lecture"
+                        ? `lecture model ${info.generationModel}`
+                        : `chat model ${info.generationModel}`,
                     );
                   }
 
@@ -1259,8 +1538,26 @@ export class LocalVaultAIView
                   this.scrollToBottom();
                 },
 
+              onSources:
+                (sources) => {
+                  latestSources = [
+                    ...sources,
+                  ];
+                },
+
+              onTimings:
+                (timings) => {
+                  this.applyStageTimings(
+                    streamingUi,
+                    timings,
+                  );
+                },
+
               onThinking:
                 (thinking) => {
+                  latestThinking =
+                    thinking;
+
                   if (
                     !this.localPlugin
                       .settings
@@ -1285,6 +1582,9 @@ export class LocalVaultAIView
 
               onAnswer:
                 (answer) => {
+                  latestAnswer =
+                    answer;
+
                   /*
                    * During generation use plain text
                    * to avoid re-running the Markdown
@@ -1307,7 +1607,15 @@ export class LocalVaultAIView
                   this.scrollToBottom();
                 },
             },
+
+            requestController
+              .signal,
           );
+
+      const generationDurationMs =
+        this.stopStreamingTimer(
+          streamingUi,
+        );
 
       streamingUi.status
         .removeClass(
@@ -1345,25 +1653,16 @@ export class LocalVaultAIView
             new Date()
               .toISOString(),
           sources:
-            result.sources.map(
-              (source) => ({
-                filePath:
-                  source.filePath,
-                heading:
-                  source.heading,
-                score:
-                  source.score,
-                sourceType:
-                  source.sourceType,
-                pageStart:
-                  source.pageStart,
-                pageEnd:
-                  source.pageEnd,
-                sectionNumber:
-                  source.sectionNumber,
-                sectionTitle:
-                  source.sectionTitle,
-              }),
+            this.toConversationSources(
+              result.sources,
+            ),
+
+          generationDurationMs,
+
+          stageTimings:
+            this.copyStageTimings(
+              streamingUi
+                .stageTimings,
             ),
         };
 
@@ -1384,47 +1683,938 @@ export class LocalVaultAIView
       await this
         .renderConversation();
     } catch (error) {
-      streamingUi.status
-        .removeClass(
-          "is-working",
+      const generationDurationMs =
+        this.stopStreamingTimer(
+          streamingUi,
         );
 
-      streamingUi.status
-        .addClass(
-          "is-error",
+      const cancelled =
+        requestController
+          .signal
+          .aborted;
+
+      if (cancelled) {
+        streamingUi.status
+          .removeClass(
+            "is-working",
+            "is-error",
+          );
+
+        streamingUi.status
+          .setText(
+            "Stopped",
+          );
+
+        /*
+         * Save an intentionally cancelled turn rather
+         * than treating it as a failed transaction.
+         *
+         * Partial reasoning/answer text and already
+         * retrieved citations are preserved.
+         */
+        const stoppedUserMessage:
+          ConversationMessage = {
+          ...userMessage,
+
+          requestState:
+            "stopped",
+        };
+
+        this.currentConversation =
+          await this.localPlugin
+            .conversationStore
+            .appendMessage(
+              this
+                .currentConversation,
+              stoppedUserMessage,
+            );
+
+        const partialContent =
+          latestAnswer
+            .trim();
+
+        const stoppedContent =
+          partialContent.length > 0
+            ? `${partialContent}\n\n*Generation stopped.*`
+            : "Generation stopped before an answer was produced.";
+
+        const assistantMessage:
+          ConversationMessage = {
+          id:
+            crypto.randomUUID(),
+
+          role:
+            "assistant",
+
+          content:
+            stoppedContent,
+
+          thinking:
+            latestThinking
+              .trim()
+              .length > 0
+              ? latestThinking
+              : undefined,
+
+          createdAt:
+            new Date()
+              .toISOString(),
+
+          sources:
+            this.toConversationSources(
+              latestSources,
+            ),
+
+          requestState:
+            "stopped",
+
+          generationDurationMs,
+
+          stageTimings:
+            this.copyStageTimings(
+              streamingUi
+                .stageTimings,
+            ),
+        };
+
+        this.currentConversation =
+          await this.localPlugin
+            .conversationStore
+            .appendMessage(
+              this
+                .currentConversation,
+              assistantMessage,
+            );
+
+        await this
+          .renderConversation();
+
+        return;
+      }
+
+      const errorMessage =
+        this.describeRequestError(
+          error,
         );
 
-      streamingUi.status.setText(
-        "Request failed",
+      const partialAnswer =
+        latestAnswer
+          .trim();
+
+      const failureContent =
+        this.makeFailureMessage(
+          errorMessage,
+          partialAnswer,
+        );
+
+      console.error(
+        "[Local Vault AI] Chat request failed.",
+        error,
       );
 
       /*
-       * Remove the transient failed turn from the UI
-       * by re-rendering only persisted conversation
-       * history, then restore the question for an
-       * explicit retry.
+       * Render the exact error into the active chat card
+       * BEFORE attempting to persist it.
+       *
+       * This guarantees that model/streaming errors are
+       * visible in the Local Vault AI conversation even
+       * if saving the failed turn has a secondary error.
        */
       await this
-        .renderConversation();
+        .renderFailureIntoStreamingUi(
+          streamingUi,
+          failureContent,
+        );
 
+      const failedUserMessage:
+        ConversationMessage = {
+        ...userMessage,
+
+        requestState:
+          "error",
+      };
+
+      const failedAssistantMessage:
+        ConversationMessage = {
+        id:
+          crypto.randomUUID(),
+
+        role:
+          "assistant",
+
+        content:
+          failureContent,
+
+        thinking:
+          latestThinking
+            .trim()
+            .length > 0
+            ? latestThinking
+            : undefined,
+
+        createdAt:
+          new Date()
+            .toISOString(),
+
+        sources:
+          this.toConversationSources(
+            latestSources,
+          ),
+
+        requestState:
+          "error",
+
+        errorMessage,
+
+        generationDurationMs,
+
+        stageTimings:
+          this.copyStageTimings(
+            streamingUi
+              .stageTimings,
+          ),
+      };
+
+      try {
+        this.currentConversation =
+          await this.localPlugin
+            .conversationStore
+            .appendMessage(
+              this
+                .currentConversation,
+              failedUserMessage,
+            );
+
+        this.currentConversation =
+          await this.localPlugin
+            .conversationStore
+            .appendMessage(
+              this
+                .currentConversation,
+              failedAssistantMessage,
+            );
+
+        /*
+         * Only replace the active error card with the
+         * persisted conversation after BOTH messages
+         * have been successfully saved.
+         */
+        await this
+          .renderConversation();
+      } catch (
+        persistenceError
+      ) {
+        console.error(
+          "[Local Vault AI] Could not persist failed chat request.",
+          persistenceError,
+        );
+
+        const persistenceMessage =
+          this.describeRequestError(
+            persistenceError,
+          );
+
+        const safePersistenceMessage =
+          persistenceMessage.replace(
+            /```/g,
+            "'''",
+          );
+
+        const combinedFailure =
+          [
+            failureContent,
+            "",
+            "**Conversation persistence also failed**",
+            "",
+            "```text",
+            safePersistenceMessage,
+            "```",
+            "",
+            "The original request error remains visible in this chat card, but this failed turn may not survive an Obsidian/plugin reload because the conversation store could not be written.",
+          ].join(
+            "\n",
+          );
+
+        await this
+          .renderFailureIntoStreamingUi(
+            streamingUi,
+            combinedFailure,
+          );
+      }
+
+      /*
+       * Keep the original question ready for an explicit
+       * retry. Failed turns are filtered from future RAG
+       * context, so the saved diagnostic copy will not
+       * contaminate the next request.
+       *
+       * Deliberately do NOT show an Obsidian Notice here.
+       * The in-chat error record is now the primary error
+       * surface.
+       */
       this.inputEl.value =
         question;
-
-      new Notice(
-        error instanceof Error
-          ? error.message
-          : "Local Vault AI request failed.",
-      );
     } finally {
-      this.askButton.disabled =
-        false;
+      if (
+        this.activeRequestController ===
+        requestController
+      ) {
+        this.activeRequestController =
+          null;
+      }
 
-      this.askButton.setText(
-        "Ask",
+      if (
+        this.activeStreamingUi ===
+        streamingUi
+      ) {
+        this.activeStreamingUi =
+          null;
+      }
+
+      this.setRequestControls(
+        false,
       );
 
       this.inputEl.focus();
     }
+  }
+
+  private stopActiveRequest(
+    updateUi:
+      boolean,
+  ): void {
+    const controller =
+      this.activeRequestController;
+
+    if (
+      !controller ||
+      controller.signal
+        .aborted
+    ) {
+      return;
+    }
+
+    if (
+      this.activeStreamingUi
+    ) {
+      this.stopStreamingTimer(
+        this.activeStreamingUi,
+      );
+    }
+
+    if (
+      updateUi &&
+      this.activeStreamingUi
+    ) {
+      this.activeStreamingUi
+        .status
+        .removeClass(
+          "is-error",
+        );
+
+      this.activeStreamingUi
+        .status
+        .addClass(
+          "is-working",
+        );
+
+      this.activeStreamingUi
+        .status
+        .setText(
+          "Stopping…",
+        );
+    }
+
+    if (
+      this.stopButton
+    ) {
+      this.stopButton.disabled =
+        true;
+
+      this.stopButton.setText(
+        "Stopping…",
+      );
+    }
+
+    controller.abort();
+  }
+
+  private setRequestControls(
+    active:
+      boolean,
+  ): void {
+    if (
+      this.askButton
+    ) {
+      this.askButton.disabled =
+        active;
+
+      this.askButton.setText(
+        active
+          ? "Working…"
+          : "Ask",
+      );
+    }
+
+    if (
+      this.stopButton
+    ) {
+      this.stopButton.disabled =
+        !active;
+
+      this.stopButton.setText(
+        "Stop",
+      );
+    }
+  }
+
+  private toConversationSources(
+    sources:
+      RetrievedChunk[],
+  ): ConversationSource[] {
+    return sources.map(
+      (source) => ({
+        filePath:
+          source.filePath,
+
+        heading:
+          source.heading,
+
+        score:
+          source.score,
+
+        sourceType:
+          source.sourceType,
+
+        pageStart:
+          source.pageStart,
+
+        pageEnd:
+          source.pageEnd,
+
+        sectionNumber:
+          source.sectionNumber,
+
+        sectionTitle:
+          source.sectionTitle,
+      }),
+    );
+  }
+
+  private applyStageTimings(
+    ui:
+      StreamingMessageUi,
+
+    timings:
+      RagStageTimings,
+  ): void {
+    ui.stageTimings = {
+      ...ui.stageTimings,
+      ...timings,
+    };
+
+    this.updateStageTimingsDisplay(
+      ui,
+    );
+  }
+
+  private finalizeStageTransition(
+    ui:
+      StreamingMessageUi,
+
+    nextStage:
+      RagStreamStage,
+
+    now:
+      number,
+  ): void {
+    if (
+      ui.currentStage ===
+      nextStage
+    ) {
+      return;
+    }
+
+    this.finalizeActiveStage(
+      ui,
+      now,
+    );
+
+    ui.currentStage =
+      nextStage;
+
+    ui.stageStartedAt =
+      now;
+  }
+
+  private finalizeActiveStage(
+    ui:
+      StreamingMessageUi,
+
+    now:
+      number,
+  ): void {
+    const elapsed =
+      Math.max(
+        0,
+        now -
+          ui.stageStartedAt,
+      );
+
+    if (
+      ui.currentStage ===
+        "retrieving" &&
+      ui.stageTimings
+        .retrievalMs ===
+        undefined
+    ) {
+      ui.stageTimings
+        .retrievalMs =
+        elapsed;
+
+      return;
+    }
+
+    if (
+      ui.currentStage ===
+        "thinking" &&
+      ui.stageTimings
+        .reasoningMs ===
+        undefined
+    ) {
+      ui.stageTimings
+        .reasoningMs =
+        elapsed;
+
+      return;
+    }
+
+    if (
+      ui.currentStage ===
+        "answering" &&
+      ui.stageTimings
+        .answeringMs ===
+        undefined
+    ) {
+      ui.stageTimings
+        .answeringMs =
+        elapsed;
+    }
+  }
+
+  private updateStageTimingsDisplay(
+    ui:
+      StreamingMessageUi,
+  ): void {
+    const snapshot:
+      RagStageTimings = {
+      ...ui.stageTimings,
+    };
+
+    const liveElapsed =
+      Math.max(
+        0,
+        performance.now() -
+          ui.stageStartedAt,
+      );
+
+    if (
+      ui.finalElapsedMs ===
+        null
+    ) {
+      if (
+        ui.currentStage ===
+          "retrieving" &&
+        snapshot
+          .retrievalMs ===
+          undefined
+      ) {
+        snapshot.retrievalMs =
+          liveElapsed;
+      }
+
+      if (
+        ui.currentStage ===
+          "thinking" &&
+        snapshot
+          .reasoningMs ===
+          undefined
+      ) {
+        snapshot.reasoningMs =
+          liveElapsed;
+      }
+
+      if (
+        ui.currentStage ===
+          "answering" &&
+        snapshot
+          .answeringMs ===
+          undefined
+      ) {
+        snapshot.answeringMs =
+          liveElapsed;
+      }
+    }
+
+    ui.timingsEl.setText(
+      this.formatStageTimings(
+        snapshot,
+        ui.currentStage ===
+          "model" &&
+        ui.finalElapsedMs ===
+          null,
+      ),
+    );
+  }
+
+  private formatStageTimings(
+    timings:
+      RagStageTimings,
+
+    modelStageActive =
+      false,
+  ): string {
+    const modelMetric = (
+      value:
+        number | undefined,
+    ): string =>
+      value !==
+        undefined
+        ? this.formatStageDuration(
+            value,
+          )
+        : modelStageActive
+          ? "measuring…"
+          : "—";
+
+    return (
+      `Retrieval: ${this.formatStageDuration(
+        timings.retrievalMs,
+      )} · ` +
+      `Model startup: ${modelMetric(
+        timings.modelStartupMs,
+      )} · ` +
+      `Prompt processing: ${modelMetric(
+        timings.promptProcessingMs,
+      )} · ` +
+      `Reasoning: ${this.formatStageDuration(
+        timings.reasoningMs,
+      )} · ` +
+      `Answering: ${this.formatStageDuration(
+        timings.answeringMs,
+      )}`
+    );
+  }
+
+  private formatStageDuration(
+    value:
+      number | undefined,
+  ): string {
+    if (
+      value ===
+        undefined ||
+      !Number.isFinite(
+        value,
+      )
+    ) {
+      return "—";
+    }
+
+    return (
+      `${(
+        Math.max(
+          0,
+          value,
+        ) /
+        1000
+      ).toFixed(1)}s`
+    );
+  }
+
+  private copyStageTimings(
+    timings:
+      RagStageTimings,
+  ): RagStageTimings {
+    return {
+      ...timings,
+    };
+  }
+
+  private updateStreamingTimer(
+    ui:
+      StreamingMessageUi,
+  ): void {
+    const elapsedMs =
+      ui.finalElapsedMs ??
+      Math.max(
+        0,
+        performance.now() -
+          ui.startedAt,
+      );
+
+    ui.role.setText(
+      `Local Vault AI · ${this.formatElapsedTime(
+        elapsedMs,
+      )}`,
+    );
+
+    this.updateStageTimingsDisplay(
+      ui,
+    );
+  }
+
+  private stopStreamingTimer(
+    ui:
+      StreamingMessageUi,
+  ): number {
+    /*
+     * Idempotent: completion, the Stop button, catch,
+     * and DOM removal can all converge on the same
+     * streaming card.
+     */
+    if (
+      ui.finalElapsedMs !==
+      null
+    ) {
+      return ui.finalElapsedMs;
+    }
+
+    const now =
+      performance.now();
+
+    this.finalizeActiveStage(
+      ui,
+      now,
+    );
+
+    const elapsedMs =
+      Math.max(
+        0,
+        now -
+          ui.startedAt,
+      );
+
+    ui.finalElapsedMs =
+      Math.round(
+        elapsedMs,
+      );
+
+    if (
+      ui.timerIntervalId !==
+      null
+    ) {
+      window.clearInterval(
+        ui.timerIntervalId,
+      );
+
+      ui.timerIntervalId =
+        null;
+    }
+
+    this.updateStreamingTimer(
+      ui,
+    );
+
+    return ui.finalElapsedMs;
+  }
+
+  private formatElapsedTime(
+    elapsedMs:
+      number,
+  ): string {
+    const totalSeconds =
+      Math.max(
+        0,
+        Math.floor(
+          elapsedMs /
+          1000,
+        ),
+      );
+
+    const hours =
+      Math.floor(
+        totalSeconds /
+        3600,
+      );
+
+    const minutes =
+      Math.floor(
+        (
+          totalSeconds %
+          3600
+        ) /
+        60,
+      );
+
+    const seconds =
+      totalSeconds %
+      60;
+
+    const secondsText =
+      String(
+        seconds,
+      ).padStart(
+        2,
+        "0",
+      );
+
+    const minutesText =
+      String(
+        minutes,
+      ).padStart(
+        2,
+        "0",
+      );
+
+    if (
+      hours <=
+      0
+    ) {
+      return (
+        `${minutesText}:` +
+        secondsText
+      );
+    }
+
+    return (
+      `${String(hours).padStart(
+        2,
+        "0",
+      )}:` +
+      `${minutesText}:` +
+      secondsText
+    );
+  }
+
+  private async renderFailureIntoStreamingUi(
+    ui:
+      StreamingMessageUi,
+
+    content:
+      string,
+  ): Promise<void> {
+    ui.status
+      .removeClass(
+        "is-working",
+      );
+
+    ui.status
+      .addClass(
+        "is-error",
+      );
+
+    ui.status
+      .setText(
+        "Request failed — details below",
+      );
+
+    /*
+     * Preserve any reasoning that already streamed, but
+     * replace the answer area with the exact failure
+     * diagnostic.
+     */
+    ui.answerBody.empty();
+
+    await MarkdownRenderer
+      .render(
+        this.app,
+        content,
+        ui.answerBody,
+        "",
+        this,
+      );
+
+    ui.answerBody.dataset
+      .copyText =
+        content;
+
+    ui.copyButton.disabled =
+      false;
+
+    this.scrollToBottom();
+  }
+
+  private describeRequestError(
+    error:
+      unknown,
+  ): string {
+    if (
+      error instanceof
+      Error
+    ) {
+      const name =
+        error.name &&
+        error.name !==
+          "Error"
+          ? `${error.name}: `
+          : "";
+
+      const message =
+        error.message
+          .trim();
+
+      return (
+        name +
+        (
+          message ||
+          "Local Vault AI request failed."
+        )
+      );
+    }
+
+    const text =
+      String(
+        error,
+      )
+        .trim();
+
+    return (
+      text ||
+      "Local Vault AI request failed."
+    );
+  }
+
+  private makeFailureMessage(
+    errorMessage:
+      string,
+
+    partialAnswer:
+      string,
+  ): string {
+    const safeError =
+      errorMessage.replace(
+        /```/g,
+        "'''",
+      );
+
+    const sections:
+      string[] = [
+      "**Request failed.**",
+      "",
+      "The request did not complete. The error has been saved here so it can be reviewed later.",
+      "",
+      "**Error**",
+      "",
+      "```text",
+      safeError,
+      "```",
+    ];
+
+    if (
+      partialAnswer.length >
+      0
+    ) {
+      sections.push(
+        "",
+        "**Partial response before the failure**",
+        "",
+        partialAnswer,
+      );
+    }
+
+    return sections.join(
+      "\n",
+    );
   }
 
   private scrollToBottom():

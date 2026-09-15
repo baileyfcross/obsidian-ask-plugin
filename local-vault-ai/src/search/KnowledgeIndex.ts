@@ -402,31 +402,54 @@ export class KnowledgeIndex {
         } as any,
       );
 
-    return (
-      results.hits ??
-      []
-    )
-      .map(
-        (
-          hit: any,
-        ) =>
-          this.toRetrievedChunk(
-            hit.document,
-            Number(
-              hit.score ??
-              0,
-            ),
-          ),
+    const mapped =
+      (
+        results.hits ??
+        []
       )
-      .filter(
+        .map(
+          (
+            hit: any,
+          ) =>
+            this.toRetrievedChunk(
+              hit.document,
+              Number(
+                hit.score ??
+                0,
+              ),
+            ),
+        );
+
+    /*
+     * DEFENSE IN DEPTH:
+     *
+     * Orama is already asked to enforce sourceKey +
+     * sectionKey with exact enum filters above.
+     *
+     * Do not trust a search backend result blindly for an
+     * explicit-section request, though. Validate BOTH the
+     * source path and the normalized section number again
+     * in TypeScript before returning a chunk to RAG.
+     *
+     * This prevents a malformed/stale index or unexpected
+     * search behavior from allowing unrelated sections to
+     * reach the generation model.
+     */
+    const validated =
+      mapped.filter(
         (
           chunk:
             RetrievedChunk,
         ) =>
-          chunk
-            .sectionNumber ===
-          normalizedSection,
-      )
+          chunk.filePath ===
+            sourcePath &&
+          normalizeSectionNumber(
+            chunk.sectionNumber,
+          ) ===
+            normalizedSection,
+      );
+
+    return validated
       .sort(
         compareDocumentOrder,
       )

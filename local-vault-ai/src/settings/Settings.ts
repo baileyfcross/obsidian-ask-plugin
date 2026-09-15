@@ -15,6 +15,30 @@ export interface LocalVaultAISettings {
   lectureModel: string;
 
   /*
+   * GENERATION RUNTIME OPTIONS.
+   *
+   * These are sent in the per-request Ollama "options"
+   * object for chat and lecture generation.
+   *
+   * generationCpuThreads:
+   *   0 = allow Ollama/llama.cpp to choose automatically.
+   *   A positive value explicitly sets num_thread.
+   *
+   * generationBatchSize:
+   *   Prompt-evaluation batch size (num_batch).
+   *
+   * chatContextSize:
+   *   Context window used for normal vault chat.
+   *
+   * lectureContextSize:
+   *   Context window used for lecture/slide generation.
+   */
+  generationCpuThreads: number;
+  generationBatchSize: number;
+  chatContextSize: number;
+  lectureContextSize: number;
+
+  /*
    * EMBEDDINGS ONLY.
    *
    * true:
@@ -38,6 +62,18 @@ export interface LocalVaultAISettings {
   embeddingModel: string;
 
   autoIndex: boolean;
+
+  /*
+   * When true, PDF/source-material files are indexed
+   * alongside Markdown.
+   *
+   * When false, the knowledge index contains Markdown
+   * files only.
+   *
+   * Changing this setting requires an index rebuild so
+   * stale PDF chunks cannot remain searchable.
+   */
+  indexPdfSources: boolean;
 
   /*
    * Full-rebuild parallelism.
@@ -103,6 +139,28 @@ export const DEFAULT_SETTINGS:
     "qwen3:30b-instruct",
 
   /*
+   * Generation runtime defaults.
+   *
+   * Four threads matches a four-physical-core CPU well
+   * and is a conservative starting point. The settings
+   * UI also exposes 6 and 8 for benchmarking SMT usage.
+   *
+   * 8K context keeps memory use substantially lower than
+   * very large model-default context windows.
+   */
+  generationCpuThreads:
+    4,
+
+  generationBatchSize:
+    256,
+
+  chatContextSize:
+    8192,
+
+  lectureContextSize:
+    8192,
+
+  /*
    * Local embeddings are the default.
    *
    * Only embeddings run locally. All generative model
@@ -121,6 +179,16 @@ export const DEFAULT_SETTINGS:
     "embeddinggemma",
 
   autoIndex:
+    true,
+
+  /*
+   * Preserve the historical Local Vault AI behavior:
+   * Markdown and PDF files are indexed by default.
+   *
+   * Disable this in Settings -> Indexing to create a
+   * Markdown-only knowledge index.
+   */
+  indexPdfSources:
     true,
 
   /*

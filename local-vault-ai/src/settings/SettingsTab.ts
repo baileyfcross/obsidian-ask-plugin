@@ -1,5 +1,6 @@
 import {
   App,
+  DropdownComponent,
   Modal,
   Notice,
   PluginSettingTab,
@@ -16,9 +17,16 @@ import {
   LocalVaultAIView,
   VIEW_TYPE_LOCAL_VAULT_AI,
 } from "../ui/ChatView";
+import {
+  OllamaModelCatalog,
+  OllamaModelPurpose,
+} from "../ollama/OllamaModelCatalog";
 
 export class LocalVaultAISettingTab
   extends PluginSettingTab {
+  private readonly modelCatalog:
+    OllamaModelCatalog;
+
   constructor(
     app: App,
     private readonly localPlugin:
@@ -28,6 +36,11 @@ export class LocalVaultAISettingTab
       app,
       localPlugin,
     );
+
+    this.modelCatalog =
+      new OllamaModelCatalog(
+        localPlugin.ollama,
+      );
   }
 
   display(): void {
@@ -43,7 +56,7 @@ export class LocalVaultAISettingTab
     new Setting(containerEl)
       .setName("Server URL")
       .setDesc(
-        "Primary model server. All chat, reasoning, lecture, and other generative model requests always use this Ollama server. If local embeddings are disabled, embedding requests use this same server too.",
+        "Primary model server. All chat, reasoning, lecture, and other generative model requests always use this Ollama server. If local embeddings are disabled, embedding requests use this same server too. After changing the server URL, use Refresh models below to load that server's installed models.",
       )
       .addText((text) =>
         text
@@ -107,6 +120,63 @@ export class LocalVaultAISettingTab
           }),
       );
 
+    const catalogSnapshot =
+      this.modelCatalog
+        .getSnapshot();
+
+    new Setting(containerEl)
+      .setName(
+        "Installed model catalog",
+      )
+      .setDesc(
+        this.modelCatalogDescription(
+          catalogSnapshot,
+        ),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText(
+            catalogSnapshot
+              .status ===
+              "loading"
+              ? "Loading…"
+              : "Refresh models",
+          )
+          .setDisabled(
+            catalogSnapshot
+              .status ===
+              "loading",
+          )
+          .onClick(async () => {
+            button.setDisabled(
+              true,
+            );
+
+            button.setButtonText(
+              "Loading…",
+            );
+
+            try {
+              const snapshot =
+                await this.modelCatalog
+                  .refresh();
+
+              new Notice(
+                `Loaded ${snapshot.models.length} installed Ollama model(s).`,
+              );
+            } catch (error) {
+              new Notice(
+                error instanceof
+                  Error
+                  ? error.message
+                  : "Could not refresh Ollama models.",
+              );
+            } finally {
+              this.display();
+            }
+          }),
+      );
+
     new Setting(containerEl)
       .setName(
         "General / Vault Explorer model",
@@ -114,24 +184,26 @@ export class LocalVaultAISettingTab
       .setDesc(
         "Used for normal vault questions, synthesis, comparisons, and general knowledge.",
       )
-      .addText((text) =>
-        text
-          .setValue(
+      .addDropdown(
+        (dropdown) => {
+          this.configureModelDropdown(
+            dropdown,
+            "generation",
             this.localPlugin
               .settings
               .chatModel,
-          )
-          .onChange(
+            false,
             async (value) => {
               this.localPlugin
                 .settings
                 .chatModel =
-                  value.trim();
+                  value;
 
               await this.localPlugin
                 .saveSettings();
             },
-          ),
+          );
+        },
       );
 
     new Setting(containerEl)
@@ -272,24 +344,252 @@ export class LocalVaultAISettingTab
       .setDesc(
         "Used only for lecture and slide generation.",
       )
-      .addText((text) =>
-        text
-          .setValue(
+      .addDropdown(
+        (dropdown) => {
+          this.configureModelDropdown(
+            dropdown,
+            "generation",
             this.localPlugin
               .settings
               .lectureModel,
+            false,
+            async (value) => {
+              this.localPlugin
+                .settings
+                .lectureModel =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          );
+        },
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Generation performance",
+      )
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName(
+        "Generation CPU threads",
+      )
+      .setDesc(
+        "Sets Ollama num_thread for one chat or lecture request. Auto leaves thread selection to Ollama. Start near the number of physical CPU cores; on a 4-core / 8-thread CPU, test 4, then 6 and 8 and keep whichever gives the best tokens per second.",
+      )
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption(
+            "0",
+            "Auto — Ollama decides",
+          )
+          .addOption(
+            "1",
+            "1 thread",
+          )
+          .addOption(
+            "2",
+            "2 threads",
+          )
+          .addOption(
+            "3",
+            "3 threads",
+          )
+          .addOption(
+            "4",
+            "4 threads — recommended starting point",
+          )
+          .addOption(
+            "5",
+            "5 threads",
+          )
+          .addOption(
+            "6",
+            "6 threads — test SMT",
+          )
+          .addOption(
+            "7",
+            "7 threads",
+          )
+          .addOption(
+            "8",
+            "8 threads — all logical CPUs",
+          )
+          .setValue(
+            String(
+              this.localPlugin
+                .settings
+                .generationCpuThreads,
+            ),
           )
           .onChange(
             async (value) => {
               this.localPlugin
                 .settings
-                .lectureModel =
-                  value.trim();
+                .generationCpuThreads =
+                  Number.parseInt(
+                    value,
+                    10,
+                  );
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          );
+      });
+
+    new Setting(containerEl)
+      .setName(
+        "Prompt batch size",
+      )
+      .setDesc(
+        "Sets Ollama num_batch. This mainly affects prompt/context evaluation before token generation begins. Larger values can process RAG context faster but may use more memory. 256 is a conservative starting point for this server.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption(
+            "64",
+            "64 — lowest memory",
+          )
+          .addOption(
+            "128",
+            "128",
+          )
+          .addOption(
+            "256",
+            "256 — recommended",
+          )
+          .addOption(
+            "512",
+            "512 — higher memory",
+          )
+          .setValue(
+            String(
+              this.localPlugin
+                .settings
+                .generationBatchSize,
+            ),
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .generationBatchSize =
+                  Number.parseInt(
+                    value,
+                    10,
+                  );
 
               await this.localPlugin
                 .saveSettings();
             },
           ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "General chat context size",
+      )
+      .setDesc(
+        "Sets Ollama num_ctx for normal Vault Explorer requests. A larger context window consumes more memory. 8192 is the recommended starting point for a RAM-constrained generation server.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption(
+            "4096",
+            "4,096 — lowest memory",
+          )
+          .addOption(
+            "8192",
+            "8,192 — recommended",
+          )
+          .addOption(
+            "16384",
+            "16,384",
+          )
+          .addOption(
+            "32768",
+            "32,768 — high memory",
+          )
+          .setValue(
+            String(
+              this.localPlugin
+                .settings
+                .chatContextSize,
+            ),
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .chatContextSize =
+                  Number.parseInt(
+                    value,
+                    10,
+                  );
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Lecture context size",
+      )
+      .setDesc(
+        "Sets Ollama num_ctx for lecture and slide-generation requests. Lecture retrieval can include more source chunks than normal chat, but larger values also consume more RAM. Start at 8192; raise it only if the model fits comfortably.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption(
+            "4096",
+            "4,096 — lowest memory",
+          )
+          .addOption(
+            "8192",
+            "8,192 — recommended",
+          )
+          .addOption(
+            "16384",
+            "16,384",
+          )
+          .addOption(
+            "32768",
+            "32,768 — high memory",
+          )
+          .setValue(
+            String(
+              this.localPlugin
+                .settings
+                .lectureContextSize,
+            ),
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .lectureContextSize =
+                  Number.parseInt(
+                    value,
+                    10,
+                  );
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Generation memory note",
+      )
+      .setDesc(
+        "Changing context or batch size can cause Ollama to reload a model with different runner settings. Higher CPU utilization is not automatically faster; compare actual response speed when testing 4, 6, and 8 threads.",
       );
 
     new Setting(containerEl)
@@ -336,29 +636,28 @@ export class LocalVaultAISettingTab
           ? "Local embeddings are enabled. This Ollama embedding-model field is preserved but not used. It becomes active if local embeddings are disabled."
           : "Ollama model used only for document/query embeddings. Chat and lecture models still use their own model settings on the same Ollama server. Changing this requires a full knowledge-index rebuild.",
       )
-      .addText((text) =>
-        text
-          .setValue(
+      .addDropdown(
+        (dropdown) => {
+          this.configureModelDropdown(
+            dropdown,
+            "embedding",
             this.localPlugin
               .settings
               .embeddingModel,
-          )
-          .setDisabled(
             this.localPlugin
               .settings
               .useLocalEmbeddings,
-          )
-          .onChange(
             async (value) => {
               this.localPlugin
                 .settings
                 .embeddingModel =
-                  value.trim();
+                  value;
 
               await this.localPlugin
                 .saveSettings();
             },
-          ),
+          );
+        },
       );
 
 
@@ -548,7 +847,7 @@ export class LocalVaultAISettingTab
         "Automatic indexing",
       )
       .setDesc(
-        "Automatically re-index Markdown and PDF sources after they change.",
+        "Automatically re-index eligible sources after they change. When PDF/source indexing is disabled, only Markdown files are monitored.",
       )
       .addToggle((toggle) =>
         toggle
@@ -572,10 +871,49 @@ export class LocalVaultAISettingTab
 
     new Setting(containerEl)
       .setName(
+        "Index PDF/source material files",
+      )
+      .setDesc(
+        "When enabled, PDF source materials are indexed alongside Markdown. Disable this for a Markdown-only knowledge index. Changing this setting requires a rebuild so old PDF chunks cannot remain searchable.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(
+            this.localPlugin
+              .settings
+              .indexPdfSources,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .indexPdfSources =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+
+              new Notice(
+                value
+                  ? "PDF/source indexing enabled. Rebuild the knowledge index to add PDF sources."
+                  : "PDF/source indexing disabled. Rebuild the knowledge index to remove existing PDF sources and index Markdown only.",
+              );
+
+              this.display();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
         "Concurrent source processing",
       )
       .setDesc(
-        "How many Markdown/PDF sources may be prepared at once during a full rebuild. Actual file reads/writes are separately limited by Concurrent filesystem operations. Start at 3.",
+        this.localPlugin
+          .settings
+          .indexPdfSources
+          ? "How many Markdown/PDF sources may be prepared at once during a full rebuild. Actual file reads/writes are separately limited by Concurrent filesystem operations. Start at 3."
+          : "How many Markdown sources may be prepared at once during a full rebuild. PDF/source indexing is currently disabled. Actual file reads/writes are separately limited by Concurrent filesystem operations. Start at 3.",
       )
       .addSlider((slider) =>
         slider
@@ -655,6 +993,11 @@ export class LocalVaultAISettingTab
             this.localPlugin
               .settings
               .pdfPageConcurrency,
+          )
+          .setDisabled(
+            !this.localPlugin
+              .settings
+              .indexPdfSources,
           )
           .onChange(
             async (value) => {
@@ -803,6 +1146,224 @@ export class LocalVaultAISettingTab
             }
           }),
       );
+
+    this.ensureInitialModelCatalogLoad();
+  }
+
+  private configureModelDropdown(
+    dropdown:
+      DropdownComponent,
+
+    purpose:
+      OllamaModelPurpose,
+
+    selected:
+      string,
+
+    disabled:
+      boolean,
+
+    onChange:
+      (
+        value:
+          string,
+      ) => Promise<void>,
+  ): void {
+    const snapshot =
+      this.modelCatalog
+        .getSnapshot();
+
+    const models =
+      this.modelCatalog
+        .getModelsFor(
+          purpose,
+        );
+
+    const available =
+      new Set(
+        models.map(
+          (model) =>
+            model.name,
+        ),
+      );
+
+    /*
+     * Always preserve the saved selection even if:
+     *
+     * - Ollama is offline,
+     * - the catalog has not loaded yet,
+     * - the model was removed from the server.
+     *
+     * The UI should never silently clear a saved model.
+     */
+    if (
+      selected &&
+      !available.has(
+        selected,
+      )
+    ) {
+      let label =
+        selected;
+
+      if (
+        snapshot.status ===
+        "ready"
+      ) {
+        label +=
+          " — saved, not currently installed";
+      } else if (
+        snapshot.status ===
+        "error"
+      ) {
+        label +=
+          " — saved";
+      }
+
+      dropdown.addOption(
+        selected,
+        label,
+      );
+    }
+
+    for (
+      const model of
+      models
+    ) {
+      dropdown.addOption(
+        model.name,
+        this.modelCatalog
+          .formatOptionLabel(
+            model,
+          ),
+      );
+    }
+
+    if (
+      !selected &&
+      models.length ===
+        0
+    ) {
+      dropdown.addOption(
+        "",
+        snapshot.status ===
+          "loading"
+          ? "Loading models…"
+          : "No models available",
+      );
+    }
+
+    dropdown
+      .setValue(
+        selected,
+      )
+      .setDisabled(
+        disabled ||
+        (
+          !selected &&
+          models.length ===
+            0
+        ),
+      )
+      .onChange(
+        (value) => {
+          if (!value) {
+            return;
+          }
+
+          void onChange(
+            value,
+          );
+        },
+      );
+  }
+
+  private modelCatalogDescription(
+    snapshot:
+      ReturnType<
+        OllamaModelCatalog[
+          "getSnapshot"
+        ]
+      >,
+  ): string {
+    switch (
+      snapshot.status
+    ) {
+      case "loading":
+        return (
+          `Loading installed models from ${snapshot.serverUrl}…`
+        );
+
+      case "ready": {
+        const generation =
+          this.modelCatalog
+            .getModelsFor(
+              "generation",
+            )
+            .length;
+
+        const embedding =
+          this.modelCatalog
+            .getModelsFor(
+              "embedding",
+            )
+            .length;
+
+        return (
+          `${snapshot.models.length} installed model(s) loaded from ${snapshot.serverUrl}. ` +
+          `${generation} available for generation; ${embedding} available for embeddings based on Ollama capability metadata. ` +
+          "Model inspection uses /api/show and does not load the models into RAM."
+        );
+      }
+
+      case "error":
+        return (
+          `Could not refresh models from ${snapshot.serverUrl}. ` +
+          `${snapshot.error ?? "Unknown error."} ` +
+          "Saved selections are preserved."
+        );
+
+      default:
+        return (
+          `Installed models have not been loaded from ${snapshot.serverUrl} yet.`
+        );
+    }
+  }
+
+  private ensureInitialModelCatalogLoad():
+    void {
+    const snapshot =
+      this.modelCatalog
+        .getSnapshot();
+
+    if (
+      snapshot.status !==
+      "idle"
+    ) {
+      return;
+    }
+
+    /*
+     * Refresh asynchronously so opening the settings
+     * page itself remains immediate.
+     */
+    void this.modelCatalog
+      .refresh()
+      .then(() => {
+        if (
+          this.containerEl
+            .isConnected
+        ) {
+          this.display();
+        }
+      })
+      .catch(() => {
+        if (
+          this.containerEl
+            .isConnected
+        ) {
+          this.display();
+        }
+      });
   }
 }
 

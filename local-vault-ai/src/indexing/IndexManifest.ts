@@ -40,6 +40,16 @@ export interface IndexManifest {
   lastIndexedAt:
     string;
 
+  /*
+   * Source-selection policy used to build this index.
+   *
+   * Optional for backward compatibility. Older
+   * manifests did not contain this field because PDF
+   * indexing used to be unconditional. Missing means
+   * true.
+   */
+  indexPdfSources?: boolean;
+
   documents:
     Record<
       string,

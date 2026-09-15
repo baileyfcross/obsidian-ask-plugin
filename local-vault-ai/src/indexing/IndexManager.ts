@@ -346,6 +346,22 @@ if (
 }
 
       if (
+        this.manifestPdfSetting() !==
+        this.settings
+          .indexPdfSources
+      ) {
+        this.setStatus(
+          "needs-rebuild",
+          this.settings
+            .indexPdfSources
+            ? "PDF/source indexing is enabled, but the current knowledge index was built in Markdown-only mode. Rebuild the index."
+            : "PDF/source indexing is disabled, but the current knowledge index was built with PDF sources. Rebuild the index to create a Markdown-only index.",
+        );
+
+        return;
+      }
+
+      if (
         !(await this.fileSystem
           .run(
             "checking knowledge index",
@@ -456,6 +472,22 @@ if (
       `Embedding backend changed to "${activeEmbedding.displayName}". ` +
         "Rebuild the knowledge index before searching.",
     );
+
+    return;
+  }
+
+  if (
+    this.manifestPdfSetting() !==
+    this.settings
+      .indexPdfSources
+  ) {
+    this.setStatus(
+      "needs-rebuild",
+      this.settings
+        .indexPdfSources
+        ? "PDF/source indexing was enabled. Rebuild the knowledge index to add eligible PDF sources."
+        : "PDF/source indexing was disabled. Rebuild the knowledge index to remove previously indexed PDFs and create a Markdown-only index.",
+    );
   }
 }
   }
@@ -532,6 +564,16 @@ if (
           embeddingDescriptor,
           dimensions,
         );
+
+      /*
+       * Persist the indexing mode with the manifest so
+       * a later Obsidian restart can detect a settings
+       * mismatch before loading stale PDF chunks.
+       */
+      this.manifest
+        .indexPdfSources =
+        this.settings
+          .indexPdfSources;
 
       const files =
         this.app.vault
@@ -712,8 +754,16 @@ if (
 
       this.setStatus(
         "ready",
-        `Indexed ${progress.markdownCompleted} Markdown file(s) and ` +
-          `${progress.pdfCompleted} PDF file(s).${skippedText}`,
+        this.settings
+          .indexPdfSources
+          ? (
+              `Indexed ${progress.markdownCompleted} Markdown file(s) and ` +
+              `${progress.pdfCompleted} PDF file(s).${skippedText}`
+            )
+          : (
+              `Indexed ${progress.markdownCompleted} Markdown file(s). ` +
+              "PDF/source indexing is disabled; this is a Markdown-only knowledge index."
+            ),
       );
     } catch (error) {
       if (
@@ -2212,13 +2262,23 @@ if (
   private isIndexableFile(
     file: TAbstractFile,
   ): file is TFile {
-    return (
+    if (
       this.isMarkdownFile(
         file,
-      ) ||
-      this.isPdfFile(
-        file,
       )
+    ) {
+      return true;
+    }
+
+    if (
+      !this.settings
+        .indexPdfSources
+    ) {
+      return false;
+    }
+
+    return this.isPdfFile(
+      file,
     );
   }
 
@@ -2244,6 +2304,18 @@ if (
         .toLowerCase() ===
         "pdf"
     );
+  }
+
+  private manifestPdfSetting():
+    boolean {
+    /*
+     * Old version-7 manifests have no source-policy
+     * field because PDF indexing was unconditional.
+     * Treat missing as true.
+     */
+    return this.manifest
+      ?.indexPdfSources ??
+      true;
   }
 
   private setStatus(

@@ -89,6 +89,19 @@ export interface ConversationSource {
   sectionTitle?: string;
 }
 
+export interface RagStageTimings {
+  retrievalMs?: number;
+  modelStartupMs?: number;
+  promptProcessingMs?: number;
+  reasoningMs?: number;
+  answeringMs?: number;
+}
+
+export type ConversationRequestState =
+  | "complete"
+  | "stopped"
+  | "error";
+
 export interface ConversationMessage {
   id: string;
   role: "user" | "assistant";
@@ -102,6 +115,43 @@ export interface ConversationMessage {
   thinking?: string;
 
   sources?: ConversationSource[];
+
+  /*
+   * Optional request-state metadata.
+   *
+   * Undefined is treated as a normal historical
+   * message for backward compatibility.
+   *
+   * Error turns remain visible in saved conversation
+   * history but are excluded from future RAG context.
+   */
+  requestState?:
+    ConversationRequestState;
+
+  /*
+   * Persist the raw request error separately from the
+   * human-readable assistant content so future UI or
+   * diagnostics can display/copy it without parsing
+   * Markdown.
+   */
+  errorMessage?: string;
+
+  /*
+   * Total elapsed Local Vault AI request time for an
+   * assistant turn, measured from the start of RAG
+   * processing until completion, cancellation, or
+   * failure.
+   *
+   * Optional for backward compatibility with existing
+   * conversation history.
+   */
+  generationDurationMs?: number;
+
+  /*
+   * Optional detailed timing diagnostics for this
+   * assistant request.
+   */
+  stageTimings?: RagStageTimings;
 }
 
 export interface Conversation {
@@ -123,6 +173,7 @@ export interface RagAnswer {
   answer: string;
   thinking?: string;
   sources: RetrievedChunk[];
+  stageTimings?: RagStageTimings;
 }
 
 export type IndexState =

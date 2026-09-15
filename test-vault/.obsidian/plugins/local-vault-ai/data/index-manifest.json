@@ -3,7 +3,7 @@
   "embeddingProvider": "local",
   "embeddingIdentity": "local:onnxruntime-web:Xenova/all-MiniLM-L6-v2:model_quantized:max256:attention-mask-mean-pooling:l2-normalized:v1",
   "embeddingDimensions": 384,
-  "lastIndexedAt": "2026-09-14T02:32:38.472Z",
+  "lastIndexedAt": "2026-09-14T06:12:11.515Z",
   "documents": {
     "6 - Full Notes/C# Variable Declaration.md": {
       "hash": "0b8461bf8e89a5572a2d67cc1fe6fd1f8f00da4303e5385dd4c4f4eb93d3184f",
@@ -16,6 +16,18 @@
       "sourceType": "markdown",
       "fileName": "C# Variable Declaration.md",
       "title": "C# Variable Declaration"
+    },
+    "6 - Full Notes/C# Tuple Returns and Deconstruction.md": {
+      "hash": "1fed514ae47c7ee7a814af60b11eae229651cff5a92d91471e498aa7cdf8a111",
+      "mtime": 1788918546714,
+      "chunkIds": [
+        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::0",
+        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::1",
+        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Tuple Returns and Deconstruction.md",
+      "title": "C# Tuple Returns and Deconstruction"
     },
     "6 - Full Notes/C# Unary and Binary Operators.md": {
       "hash": "4aed38334764fcde7113acbbcc085e59072e04d0037216ac3ca3720f82a8285f",
@@ -41,17 +53,17 @@
       "fileName": "C# Type Inference.md",
       "title": "C# Type Inference"
     },
-    "6 - Full Notes/C# Tuple Returns and Deconstruction.md": {
-      "hash": "1fed514ae47c7ee7a814af60b11eae229651cff5a92d91471e498aa7cdf8a111",
-      "mtime": 1788918546714,
+    "6 - Full Notes/C# Structs and Value Types.md": {
+      "hash": "3f21f69e90dcba518d1461d27f653f870ef85514e21864cf4e301f7c0d375d2c",
+      "mtime": 1788918544187,
       "chunkIds": [
-        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::0",
-        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::1",
-        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::2"
+        "6 - Full Notes/C# Structs and Value Types.md::0",
+        "6 - Full Notes/C# Structs and Value Types.md::1",
+        "6 - Full Notes/C# Structs and Value Types.md::2"
       ],
       "sourceType": "markdown",
-      "fileName": "C# Tuple Returns and Deconstruction.md",
-      "title": "C# Tuple Returns and Deconstruction"
+      "fileName": "C# Structs and Value Types.md",
+      "title": "C# Structs and Value Types"
     },
     "6 - Full Notes/C# Switch Expressions.md": {
       "hash": "fc1fab356ee2c16ac90a69acaf28bbbaaf460e152d8af17759f030277431f292",
@@ -64,18 +76,6 @@
       "sourceType": "markdown",
       "fileName": "C# Switch Expressions.md",
       "title": "C# Switch Expressions"
-    },
-    "6 - Full Notes/C# Structs and Value Types.md": {
-      "hash": "3f21f69e90dcba518d1461d27f653f870ef85514e21864cf4e301f7c0d375d2c",
-      "mtime": 1788918544187,
-      "chunkIds": [
-        "6 - Full Notes/C# Structs and Value Types.md::0",
-        "6 - Full Notes/C# Structs and Value Types.md::1",
-        "6 - Full Notes/C# Structs and Value Types.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Structs and Value Types.md",
-      "title": "C# Structs and Value Types"
     },
     "6 - Full Notes/C# String Literals.md": {
       "hash": "717922ade67cb2170b0bea58d3fa11f220e8d3d30d21d5d51f2d71201c5283ec",
@@ -377,6 +377,18 @@
       "fileName": "C# Classes and Objects.md",
       "title": "C# Classes and Objects"
     },
+    "6 - Full Notes/C# Casting and Conversion.md": {
+      "hash": "7d53d3ec858e236d36a72385ec7a6aefe6ea6d620f2197ee25f0534095ca2228",
+      "mtime": 1788918510054,
+      "chunkIds": [
+        "6 - Full Notes/C# Casting and Conversion.md::0",
+        "6 - Full Notes/C# Casting and Conversion.md::1",
+        "6 - Full Notes/C# Casting and Conversion.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Casting and Conversion.md",
+      "title": "C# Casting and Conversion"
+    },
     "6 - Full Notes/C# Class Libraries.md": {
       "hash": "c1e366884d53eccf5b4b69ef2c1310966af3b357851f8b87c42e368dda6625ef",
       "mtime": 1788918513893,
@@ -413,17 +425,17 @@
       "fileName": "C# Boolean Type.md",
       "title": "C# Boolean Type"
     },
-    "6 - Full Notes/C# Casting and Conversion.md": {
-      "hash": "7d53d3ec858e236d36a72385ec7a6aefe6ea6d620f2197ee25f0534095ca2228",
-      "mtime": 1788918510054,
+    "6 - Full Notes/C# Bitwise and Shift Operators.md": {
+      "hash": "89ae599d02c593231750b488927880acaa5f541eea059cd0b0b365b046a7e29a",
+      "mtime": 1788918507555,
       "chunkIds": [
-        "6 - Full Notes/C# Casting and Conversion.md::0",
-        "6 - Full Notes/C# Casting and Conversion.md::1",
-        "6 - Full Notes/C# Casting and Conversion.md::2"
+        "6 - Full Notes/C# Bitwise and Shift Operators.md::0",
+        "6 - Full Notes/C# Bitwise and Shift Operators.md::1",
+        "6 - Full Notes/C# Bitwise and Shift Operators.md::2"
       ],
       "sourceType": "markdown",
-      "fileName": "C# Casting and Conversion.md",
-      "title": "C# Casting and Conversion"
+      "fileName": "C# Bitwise and Shift Operators.md",
+      "title": "C# Bitwise and Shift Operators"
     },
     "6 - Full Notes/C# Async and Await.md": {
       "hash": "767e980f3cda888ee11f6d88f159fe1fb1765c7cafde22bf3e3d8e03bb6d5f9d",
@@ -436,18 +448,6 @@
       "sourceType": "markdown",
       "fileName": "C# Async and Await.md",
       "title": "C# Async and Await"
-    },
-    "6 - Full Notes/C# Bitwise and Shift Operators.md": {
-      "hash": "89ae599d02c593231750b488927880acaa5f541eea059cd0b0b365b046a7e29a",
-      "mtime": 1788918507555,
-      "chunkIds": [
-        "6 - Full Notes/C# Bitwise and Shift Operators.md::0",
-        "6 - Full Notes/C# Bitwise and Shift Operators.md::1",
-        "6 - Full Notes/C# Bitwise and Shift Operators.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Bitwise and Shift Operators.md",
-      "title": "C# Bitwise and Shift Operators"
     },
     "6 - Full Notes/C# Assignment and Logical Operators.md": {
       "hash": "708b670f5cf023f478af057b36e7e68f815efb07dfbed571f11fbc4c0d23a68e",

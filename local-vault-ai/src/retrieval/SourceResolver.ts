@@ -33,19 +33,27 @@ const CONVERSATIONAL_FILLER =
     "again",
     "can",
     "could",
+    "create",
     "explain",
     "for",
     "how",
     "it",
+    "lecture",
+    "lesson",
+    "make",
     "me",
     "more",
     "please",
+    "presentation",
     "say",
     "section",
+    "slide",
+    "slides",
     "summarize",
     "summary",
     "talk",
     "talks",
+    "teach",
     "tell",
     "that",
     "this",
@@ -55,9 +63,38 @@ const CONVERSATIONAL_FILLER =
   ]);
 
 /**
+ * Common instructional/request framing that must NOT be
+ * mistaken for a source title.
+ *
+ * Examples that should produce no explicit source:
+ *
+ *   Can you create a lecture for section 1.5?
+ *   Make slides for section 1.5.
+ *   Explain section 1.5.
+ *   Give me a lesson for section 1.5.
+ *
+ * When these return null, RagService is free to inherit
+ * the source from recent conversation context.
+ */
+const REQUEST_FRAMING_PATTERNS:
+  RegExp[] = [
+  /^(?:can|could|would)\s+you\s+(?:please\s+)?(?:create|make|write|build|generate|give|prepare|explain|summarize|teach|tell)\b/i,
+
+  /^(?:please\s+)?(?:create|make|write|build|generate|give|prepare|explain|summarize|teach|tell)\b/i,
+
+  /^(?:can|could|would)\s+you\s+(?:please\s+)?(?:create|make|write|build|generate|give|prepare)\s+(?:me\s+)?(?:a\s+)?(?:lecture|lesson|presentation|slide(?:s)?|slide\s+deck)\b/i,
+
+  /^(?:create|make|write|build|generate|give|prepare)\s+(?:me\s+)?(?:a\s+)?(?:lecture|lesson|presentation|slide(?:s)?|slide\s+deck)\b/i,
+
+  /^(?:what|how)\s+(?:about|does|do|is|are)\b/i,
+
+  /^(?:tell\s+me|teach\s+me)\b/i,
+];
+
+/**
  * Extract the user's natural-language source/book name.
  *
- * Supported examples include:
+ * Supported examples:
  *
  *   What does Foundations of Computing say for section 1.5?
  *
@@ -74,10 +111,20 @@ const CONVERSATIONAL_FILLER =
  *   In my Foundations of Computation book, explain
  *   section 1.5.
  *
- * Follow-ups that do not name a source intentionally
- * return null so RagService can inherit a recent source:
+ *   Foundations of Computation section 1.5
+ *
+ * Follow-ups and instruction-only prompts intentionally
+ * return null:
  *
  *   What about section 1.5 again?
+ *
+ *   Can you create a lecture for section 1.5?
+ *
+ *   Make slides for section 1.5.
+ *
+ * This allows RagService to inherit a recent source from
+ * conversation context rather than treating instruction
+ * wording as a title.
  */
 export function extractRequestedSourcePhrase(
   question: string,
@@ -86,14 +133,12 @@ export function extractRequestedSourcePhrase(
     question.trim();
 
   /*
-   * Strongest signal: the user explicitly says
-   * "my/the <title> book/pdf/note/document/file".
+   * Strongest signal: explicit document noun.
    *
-   * This handles conversational wording where the
-   * source appears well after the numbered section:
+   * Examples:
    *
-   *   section 1.5 talks about in my
-   *   Foundations of Computation book
+   *   my Foundations of Computation book
+   *   the Foundations of Computation PDF
    */
   const namedDocument =
     trimmed.match(
@@ -108,7 +153,12 @@ export function extractRequestedSourcePhrase(
         namedDocument[1],
       );
 
-    if (cleaned) {
+    if (
+      cleaned &&
+      !isLikelyRequestFraming(
+        cleaned,
+      )
+    ) {
       return cleaned;
     }
   }
@@ -116,13 +166,10 @@ export function extractRequestedSourcePhrase(
   /*
    * Section followed later by a source preposition.
    *
-   * The bounded middle portion deliberately permits
-   * conversational words:
+   * Supports:
    *
    *   section 1.5 talks about in my <source>
    *   section 1.5 is about from <source>
-   *
-   * but does not cross sentence punctuation.
    */
   const sectionThenSource =
     trimmed.match(
@@ -137,7 +184,12 @@ export function extractRequestedSourcePhrase(
         sectionThenSource[1],
       );
 
-    if (cleaned) {
+    if (
+      cleaned &&
+      !isLikelyRequestFraming(
+        cleaned,
+      )
+    ) {
       return cleaned;
     }
   }
@@ -147,9 +199,6 @@ export function extractRequestedSourcePhrase(
    *
    *   section 1.5 of Foundations of Computing
    *   section 1.5 in Foundations of Computing
-   *
-   * Kept separately because it is a very common,
-   * high-confidence pattern.
    */
   const sectionFirst =
     trimmed.match(
@@ -164,13 +213,20 @@ export function extractRequestedSourcePhrase(
         sectionFirst[1],
       );
 
-    if (cleaned) {
+    if (
+      cleaned &&
+      !isLikelyRequestFraming(
+        cleaned,
+      )
+    ) {
       return cleaned;
     }
   }
 
   /*
-   * Direct "what does <source> say..." phrasing.
+   * Direct title-before-action phrasing:
+   *
+   *   What does Foundations of Computation say...
    */
   const direct =
     trimmed.match(
@@ -185,17 +241,25 @@ export function extractRequestedSourcePhrase(
         direct[1],
       );
 
-    if (cleaned) {
+    if (
+      cleaned &&
+      !isLikelyRequestFraming(
+        cleaned,
+      )
+    ) {
       return cleaned;
     }
   }
 
   /*
-   * "in/from <source>, section 1.5 ..."
+   * Source-first phrasing:
+   *
+   *   In my Foundations of Computation book, explain...
+   *   From Foundations of Computation, summarize...
    */
   const inSource =
     trimmed.match(
-      /^\s*(?:in|from|according\s+to)\s+(?:(?:my|the)\s+)?(.+?)(?:,\s*|\s+)(?:what\s+(?:does|is)|section|sec\.?|§|explain|summarize)\b/i,
+      /^\s*(?:in|from|according\s+to)\s+(?:(?:my|the)\s+)?(.+?)(?:,\s*|\s+)(?:what\s+(?:does|is)|section|sec\.?|§|explain|summarize|create|make|teach|tell)\b/i,
     );
 
   if (
@@ -206,20 +270,32 @@ export function extractRequestedSourcePhrase(
         inSource[1],
       );
 
-    if (cleaned) {
+    if (
+      cleaned &&
+      !isLikelyRequestFraming(
+        cleaned,
+      )
+    ) {
       return cleaned;
     }
   }
 
   /*
-   * Title-before-section wording without a document
-   * noun:
+   * Title immediately before "section".
+   *
+   * Valid:
    *
    *   Foundations of Computation section 1.5
    *
-   * Keep this conservative by requiring the text before
-   * "section" to contain at least one meaningful token
-   * after conversational framing has been removed.
+   * Invalid:
+   *
+   *   Can you create a lecture for section 1.5
+   *
+   *   Make slides for section 1.5
+   *
+   * This is intentionally conservative because this
+   * fallback previously caused instruction text to be
+   * treated as a source title.
    */
   const titleBeforeSection =
     trimmed.match(
@@ -229,34 +305,42 @@ export function extractRequestedSourcePhrase(
   if (
     titleBeforeSection?.[1]
   ) {
-    let candidate =
+    const rawCandidate =
       titleBeforeSection[1]
-        .replace(
-          /^\s*(?:can\s+you\s+)?(?:please\s+)?(?:explain|summarize|tell\s+me\s+about|what\s+about)\s+/i,
-          "",
-        )
         .trim();
 
-    const cleaned =
-      cleanPhrase(
-        candidate,
-      );
+    if (
+      !isLikelyRequestFraming(
+        rawCandidate,
+      )
+    ) {
+      const candidate =
+        stripRequestFraming(
+          rawCandidate,
+        );
 
-    if (cleaned) {
-      return cleaned;
+      const cleaned =
+        cleanPhrase(
+          candidate,
+        );
+
+      if (
+        cleaned &&
+        !isLikelyRequestFraming(
+          cleaned,
+        )
+      ) {
+        return cleaned;
+      }
     }
   }
 
   /*
-   * Generic fallback:
-   * remove an explicit section suffix and then strip
-   * common question/action framing.
+   * Generic fallback.
    *
-   * This intentionally returns null for:
-   *
-   *   "What about section 1.5 again?"
-   *
-   * so conversation source carry-forward can run.
+   * Take text before the explicit section reference,
+   * remove request framing, then only accept it as a
+   * source if it still looks like a genuine title.
    */
   const sectionMatch =
     trimmed.match(
@@ -283,10 +367,26 @@ export function extractRequestedSourcePhrase(
       )
       .trim();
 
+  /*
+   * Instruction-only text must resolve to null.
+   *
+   * Example:
+   *
+   *   "Can you create a lecture for "
+   *
+   * is not a source title.
+   */
+  if (
+    isLikelyRequestFraming(
+      working,
+    )
+  ) {
+    return null;
+  }
+
   working =
-    working.replace(
-      /^\s*(?:can\s+you\s+)?(?:please\s+)?(?:what\s+does|what\s+do|what\s+is\s+in|according\s+to|from|in|explain|summarize|tell\s+me\s+about)\s+/i,
-      "",
+    stripRequestFraming(
+      working,
     );
 
   working =
@@ -301,18 +401,28 @@ export function extractRequestedSourcePhrase(
       "",
     );
 
-  return cleanPhrase(
-    working,
-  );
+  const cleaned =
+    cleanPhrase(
+      working,
+    );
+
+  if (
+    !cleaned ||
+    isLikelyRequestFraming(
+      cleaned,
+    )
+  ) {
+    return null;
+  }
+
+  return cleaned;
 }
 
 /**
- * Terms used only to discover possible indexed source
- * candidates. Final acceptance uses scoreSourceCandidate.
+ * Terms used to discover possible indexed sources.
  *
  * Both original tokens and canonical stems are included,
- * so "computing" can discover "computation" even when the
- * index contains only one of those forms.
+ * so "computing" can discover "computation".
  */
 export function buildSourceSearchTerms(
   question: string,
@@ -383,12 +493,12 @@ export function buildSourceSearchTerms(
 /**
  * Fuzzy source-name score.
  *
- * The token score is intentionally strong enough that:
+ * The token score intentionally treats:
  *
  *   Foundations of Computing
  *   Foundations of Computation
  *
- * are treated as a near-exact title match.
+ * as a near-exact title match.
  */
 export function scoreSourceCandidate(
   question: string,
@@ -590,6 +700,166 @@ export function normalizeSourceName(
   return working;
 }
 
+function stripRequestFraming(
+  value: string,
+): string {
+  let working =
+    value.trim();
+
+  const patterns:
+    RegExp[] = [
+    /^\s*(?:can|could|would)\s+you\s+(?:please\s+)?/i,
+
+    /^\s*please\s+/i,
+
+    /^\s*(?:create|make|write|build|generate|give|prepare)\s+(?:me\s+)?(?:a\s+)?(?:lecture|lesson|presentation|slide(?:s)?|slide\s+deck)\s+(?:about|on|for|from)?\s*/i,
+
+    /^\s*(?:explain|summarize|teach|tell\s+me\s+about)\s+/i,
+
+    /^\s*(?:what\s+does|what\s+do|what\s+is\s+in|according\s+to|from|in)\s+/i,
+  ];
+
+  let changed =
+    true;
+
+  while (changed) {
+    changed =
+      false;
+
+    for (
+      const pattern of
+      patterns
+    ) {
+      const next =
+        working.replace(
+          pattern,
+          "",
+        );
+
+      if (
+        next !== working
+      ) {
+        working =
+          next.trim();
+
+        changed =
+          true;
+      }
+    }
+  }
+
+  return working;
+}
+
+function isLikelyRequestFraming(
+  value: string,
+): boolean {
+  const trimmed =
+    value
+      .trim()
+      .replace(
+        /[,:;.!?]+$/g,
+        "",
+      );
+
+  if (!trimmed) {
+    return true;
+  }
+
+  for (
+    const pattern of
+    REQUEST_FRAMING_PATTERNS
+  ) {
+    if (
+      pattern.test(
+        trimmed,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  const normalized =
+    normalizeSourceName(
+      trimmed,
+    );
+
+  const tokens =
+    normalized
+      .split(" ")
+      .filter(Boolean);
+
+  if (
+    tokens.length === 0
+  ) {
+    return true;
+  }
+
+  const meaningful =
+    tokens.filter(
+      (token) =>
+        token.length >= 3 &&
+        !STOP_WORDS.has(
+          token,
+        ) &&
+        !CONVERSATIONAL_FILLER.has(
+          token,
+        ),
+    );
+
+  /*
+   * A phrase composed entirely of request vocabulary
+   * is not a source.
+   *
+   * Examples:
+   *
+   *   create a lecture for
+   *   make slides for
+   *   explain this
+   */
+  if (
+    meaningful.length ===
+    0
+  ) {
+    return true;
+  }
+
+  /*
+   * If the phrase begins with a request verb and all
+   * remaining meaningful words are generic teaching
+   * output nouns, treat it as framing rather than a
+   * title.
+   */
+  const first =
+    tokens[0] ??
+    "";
+
+  const requestVerb =
+    new Set([
+      "build",
+      "create",
+      "explain",
+      "generate",
+      "give",
+      "make",
+      "prepare",
+      "summarize",
+      "teach",
+      "tell",
+      "write",
+    ]);
+
+  if (
+    requestVerb.has(
+      first,
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function cleanPhrase(
   value: string,
 ): string | null {
@@ -611,6 +881,14 @@ function cleanPhrase(
 
   if (
     cleaned.length < 4
+  ) {
+    return null;
+  }
+
+  if (
+    isLikelyRequestFraming(
+      cleaned,
+    )
   ) {
     return null;
   }

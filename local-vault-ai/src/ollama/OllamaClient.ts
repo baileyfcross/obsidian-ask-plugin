@@ -2,10 +2,34 @@ import { requestUrl } from "obsidian";
 import * as http from "node:http";
 import * as https from "node:https";
 
+export interface OllamaModelDetails {
+  parent_model?: string;
+  format?: string;
+  family?: string;
+  families?: string[];
+  parameter_size?: string;
+  quantization_level?: string;
+}
+
 export interface OllamaModel {
   name: string;
   model: string;
+  modified_at?: string;
   size?: number;
+  digest?: string;
+  details?: OllamaModelDetails;
+}
+
+export interface OllamaModelInfo {
+  model: string;
+  capabilities?: string[];
+  details?: OllamaModelDetails;
+  parameters?: string;
+  modified_at?: string;
+  model_info?: Record<
+    string,
+    unknown
+  >;
 }
 
 export interface OllamaRunningModel {
@@ -15,6 +39,7 @@ export interface OllamaRunningModel {
   size_vram?: number;
   expires_at?: string;
   context_length?: number;
+  details?: OllamaModelDetails;
 }
 
 export interface OllamaChatMessage {
@@ -32,11 +57,36 @@ export type OllamaThinkOption =
 export interface OllamaChatOptions {
   keepAlive?: string | number;
   think?: OllamaThinkOption;
+
+  /*
+   * Per-request Ollama runner options.
+   *
+   * These map to:
+   *
+   *   num_thread
+   *   num_batch
+   *   num_ctx
+   *
+   * inside the API request's "options" object.
+   */
+  numThread?: number;
+  numBatch?: number;
+  numCtx?: number;
+}
+
+export interface OllamaChatMetrics {
+  totalDurationMs?: number;
+  loadDurationMs?: number;
+  promptEvalDurationMs?: number;
+  evalDurationMs?: number;
+  promptEvalCount?: number;
+  evalCount?: number;
 }
 
 export interface OllamaChatResult {
   content: string;
   thinking?: string;
+  metrics?: OllamaChatMetrics;
 }
 
 export interface OllamaChatStreamCallbacks {
@@ -57,6 +107,17 @@ interface TagsResponse {
 
 interface RunningModelsResponse {
   models?: OllamaRunningModel[];
+}
+
+interface ShowModelResponse {
+  capabilities?: string[];
+  details?: OllamaModelDetails;
+  parameters?: string;
+  modified_at?: string;
+  model_info?: Record<
+    string,
+    unknown
+  >;
 }
 
 interface EmbedResponse {
@@ -80,6 +141,13 @@ interface ChatStreamChunk {
 
   done?: boolean;
   done_reason?: string;
+
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  eval_count?: number;
+  eval_duration?: number;
 
   error?: string;
 }
@@ -144,6 +212,83 @@ export class OllamaClient {
       throw new Error(
         `Could not connect to Ollama at ${this.baseUrl}. ` +
           `Make sure Ollama is running. ${this.errorText(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Fetch metadata and capabilities for an installed
+   * model without running/loading the model.
+   *
+   * Modern Ollama servers expose capabilities such as:
+   *
+   *   completion
+   *   embedding
+   *   vision
+   *   tools
+   *   thinking
+   *
+   * Older servers may omit the capabilities array. The
+   * caller should treat that as "unknown" rather than
+   * assuming the model is unusable.
+   */
+  async showModel(
+    model: string,
+  ): Promise<OllamaModelInfo> {
+    try {
+      const response =
+        await requestUrl({
+          url:
+            `${this.baseUrl}/api/show`,
+          method:
+            "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body:
+            JSON.stringify({
+              model,
+              verbose:
+                false,
+            }),
+        });
+
+      if (
+        response.status >=
+        400
+      ) {
+        throw new Error(
+          `Ollama returned HTTP ${response.status}.`,
+        );
+      }
+
+      const payload =
+        response.json as
+          ShowModelResponse;
+
+      return {
+        model,
+
+        capabilities:
+          payload.capabilities,
+
+        details:
+          payload.details,
+
+        parameters:
+          payload.parameters,
+
+        modified_at:
+          payload.modified_at,
+
+        model_info:
+          payload.model_info,
+      };
+    } catch (error) {
+      throw new Error(
+        `Could not inspect Ollama model "${model}". ` +
+          `${this.errorText(error)}`,
       );
     }
   }
@@ -329,6 +474,18 @@ export class OllamaClient {
           options.think;
       }
 
+      const runtimeOptions =
+        this.makeRuntimeOptions(
+          options,
+        );
+
+      if (
+        runtimeOptions
+      ) {
+        body.options =
+          runtimeOptions;
+      }
+
       const response =
         await requestUrl({
           url:
@@ -426,6 +583,18 @@ export class OllamaClient {
         options.think;
     }
 
+    const runtimeOptions =
+      this.makeRuntimeOptions(
+        options,
+      );
+
+    if (
+      runtimeOptions
+    ) {
+      requestBody.options =
+        runtimeOptions;
+    }
+
     const serialized =
       JSON.stringify(requestBody);
 
@@ -441,6 +610,10 @@ export class OllamaClient {
       let thinking = "";
       let content = "";
       let buffer = "";
+
+      let metrics:
+        OllamaChatMetrics |
+        undefined;
 
       const finishReject = (
         error: unknown,
@@ -478,6 +651,8 @@ export class OllamaClient {
               0
                 ? trimmedThinking
                 : undefined,
+
+            metrics,
           });
         };
 
@@ -580,6 +755,23 @@ export class OllamaClient {
                 );
                 request.destroy();
                 return;
+              }
+
+              if (
+                chunk.done ||
+                chunk.total_duration !==
+                  undefined ||
+                chunk.load_duration !==
+                  undefined ||
+                chunk.prompt_eval_duration !==
+                  undefined ||
+                chunk.eval_duration !==
+                  undefined
+              ) {
+                metrics =
+                  this.toChatMetrics(
+                    chunk,
+                  );
               }
 
               const thinkingDelta =
@@ -871,6 +1063,140 @@ export class OllamaClient {
     }
 
     return false;
+  }
+
+  private toChatMetrics(
+    chunk:
+      ChatStreamChunk,
+  ): OllamaChatMetrics {
+    return {
+      totalDurationMs:
+        this.nsToMs(
+          chunk.total_duration,
+        ),
+
+      loadDurationMs:
+        this.nsToMs(
+          chunk.load_duration,
+        ),
+
+      promptEvalDurationMs:
+        this.nsToMs(
+          chunk.prompt_eval_duration,
+        ),
+
+      evalDurationMs:
+        this.nsToMs(
+          chunk.eval_duration,
+        ),
+
+      promptEvalCount:
+        chunk.prompt_eval_count,
+
+      evalCount:
+        chunk.eval_count,
+    };
+  }
+
+  private nsToMs(
+    value:
+      number | undefined,
+  ): number | undefined {
+    if (
+      value ===
+        undefined ||
+      !Number.isFinite(
+        value,
+      )
+    ) {
+      return undefined;
+    }
+
+    return Math.max(
+      0,
+      value /
+        1_000_000,
+    );
+  }
+
+  private makeRuntimeOptions(
+    options?:
+      OllamaChatOptions,
+  ): Record<
+    string,
+    number
+  > | undefined {
+    const runtime:
+      Record<string, number> = {};
+
+    const numThread =
+      this.positiveIntegerOrUndefined(
+        options?.numThread,
+      );
+
+    const numBatch =
+      this.positiveIntegerOrUndefined(
+        options?.numBatch,
+      );
+
+    const numCtx =
+      this.positiveIntegerOrUndefined(
+        options?.numCtx,
+      );
+
+    if (
+      numThread !==
+      undefined
+    ) {
+      runtime.num_thread =
+        numThread;
+    }
+
+    if (
+      numBatch !==
+      undefined
+    ) {
+      runtime.num_batch =
+        numBatch;
+    }
+
+    if (
+      numCtx !==
+      undefined
+    ) {
+      runtime.num_ctx =
+        numCtx;
+    }
+
+    return Object.keys(
+      runtime,
+    ).length > 0
+      ? runtime
+      : undefined;
+  }
+
+  private positiveIntegerOrUndefined(
+    value:
+      number | undefined,
+  ): number | undefined {
+    if (
+      value ===
+        undefined ||
+      !Number.isFinite(
+        value,
+      )
+    ) {
+      return undefined;
+    }
+
+    const normalized =
+      Math.trunc(
+        value,
+      );
+
+    return normalized > 0
+      ? normalized
+      : undefined;
   }
 
   private cleanBaseUrl(

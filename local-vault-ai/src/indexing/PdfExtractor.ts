@@ -128,6 +128,51 @@ function defineMethod(
 function ensurePdfRuntimePolyfills():
   void {
   /*
+   * Math.sumPrecise()
+   *
+   * pdfjs-dist 5.6+ began using this newer JavaScript API and
+   * newer PDF.js releases no longer provide their own fallback.
+   *
+   * Obsidian can run on an Electron/Chromium version that does
+   * not expose Math.sumPrecise yet, so install a compatible
+   * fallback before PDF.js evaluates.
+   *
+   * PDF.js previously used the same straightforward summation
+   * fallback internally. Its call sites use short numeric
+   * collections where this is sufficient for PDF parsing/text
+   * extraction.
+   */
+  defineMethod(
+    Math,
+    "sumPrecise",
+    function sumPrecise(
+      values:
+        Iterable<number>,
+    ): number {
+      let sum = 0;
+
+      for (
+        const value of
+        values
+      ) {
+        if (
+          typeof value !==
+          "number"
+        ) {
+          throw new TypeError(
+            "Math.sumPrecise requires an iterable of numbers.",
+          );
+        }
+
+        sum +=
+          value;
+      }
+
+      return sum;
+    },
+  );
+
+  /*
    * Uint8Array.prototype.toHex()
    */
   defineMethod(

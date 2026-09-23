@@ -726,13 +726,10 @@ export class LocalVaultAIView
       message.role ===
       "assistant"
     ) {
-      await MarkdownRenderer
-        .render(
-          this.app,
+      await this
+        .renderAssistantMarkdown(
           message.content,
           body,
-          "",
-          this,
         );
     } else {
       body.setText(
@@ -2486,6 +2483,383 @@ export class LocalVaultAIView
     );
   }
 
+  private async renderAssistantMarkdown(
+    content:
+      string,
+
+    container:
+      HTMLElement,
+  ): Promise<void> {
+    /*
+     * Obsidian's Markdown renderer handles Markdown math using
+     * dollar-sign delimiters. Models frequently emit the LaTeX
+     * delimiters \( ... \) and \[ ... \] instead.
+     *
+     * Normalize those model-style delimiters before rendering,
+     * while deliberately preserving fenced and inline code.
+     */
+    const markdown =
+      this.normalizeMathDelimiters(
+        content,
+      );
+
+    container.empty();
+
+    await MarkdownRenderer
+      .render(
+        this.app,
+        markdown,
+        container,
+        "",
+        this,
+      );
+  }
+
+  private normalizeMathDelimiters(
+    markdown:
+      string,
+  ): string {
+    const lines =
+      markdown.split(
+        "\\n",
+      );
+
+    let fence:
+      "`" |
+      "~" |
+      null =
+      null;
+
+    let fenceLength =
+      0;
+
+    const output:
+      string[] = [];
+
+    for (
+      const line of
+      lines
+    ) {
+      const trimmed =
+        line.trimStart();
+
+      const fenceInfo =
+        this.readFenceStart(
+          trimmed,
+        );
+
+      if (
+        fence ===
+        null &&
+        fenceInfo
+      ) {
+        fence =
+          fenceInfo.character;
+
+        fenceLength =
+          fenceInfo.length;
+
+        output.push(
+          line,
+        );
+
+        continue;
+      }
+
+      if (
+        fence !==
+        null
+      ) {
+        output.push(
+          line,
+        );
+
+        if (
+          this.isFenceEnd(
+            trimmed,
+            fence,
+            fenceLength,
+          )
+        ) {
+          fence =
+            null;
+
+          fenceLength =
+            0;
+        }
+
+        continue;
+      }
+
+      output.push(
+        this.normalizeInlineMathDelimiters(
+          line,
+        ),
+      );
+    }
+
+    return output.join(
+      "\\n",
+    );
+  }
+
+  private readFenceStart(
+    text:
+      string,
+  ):
+    {
+      character:
+        "`" |
+        "~";
+
+      length:
+        number;
+    } |
+    null {
+    if (
+      text.length <
+      3
+    ) {
+      return null;
+    }
+
+    const character =
+      text[0];
+
+    if (
+      character !==
+        "`" &&
+      character !==
+        "~"
+    ) {
+      return null;
+    }
+
+    let length =
+      0;
+
+    while (
+      length <
+        text.length &&
+      text[length] ===
+        character
+    ) {
+      length +=
+        1;
+    }
+
+    if (
+      length <
+      3
+    ) {
+      return null;
+    }
+
+    return {
+      character,
+      length,
+    };
+  }
+
+  private isFenceEnd(
+    text:
+      string,
+
+    character:
+      "`" |
+      "~",
+
+    minimumLength:
+      number,
+  ): boolean {
+    if (
+      text[0] !==
+      character
+    ) {
+      return false;
+    }
+
+    let length =
+      0;
+
+    while (
+      length <
+        text.length &&
+      text[length] ===
+        character
+    ) {
+      length +=
+        1;
+    }
+
+    return (
+      length >=
+      minimumLength
+    );
+  }
+
+  private normalizeInlineMathDelimiters(
+    line:
+      string,
+  ): string {
+    let output =
+      "";
+
+    let index =
+      0;
+
+    let inlineCodeFenceLength =
+      0;
+
+    while (
+      index <
+      line.length
+    ) {
+      const character =
+        line[index]!;
+
+      /*
+       * Respect Markdown inline code spans. A span opened by N
+       * backticks closes only on another run of N backticks.
+       */
+      if (
+        character ===
+        "`"
+      ) {
+        let runLength =
+          1;
+
+        while (
+          index +
+            runLength <
+            line.length &&
+          line[
+            index +
+              runLength
+          ] ===
+            "`"
+        ) {
+          runLength +=
+            1;
+        }
+
+        output +=
+          line.slice(
+            index,
+            index +
+              runLength,
+          );
+
+        if (
+          inlineCodeFenceLength ===
+          0
+        ) {
+          inlineCodeFenceLength =
+            runLength;
+        } else if (
+          runLength ===
+          inlineCodeFenceLength
+        ) {
+          inlineCodeFenceLength =
+            0;
+        }
+
+        index +=
+          runLength;
+
+        continue;
+      }
+
+      if (
+        inlineCodeFenceLength >
+        0
+      ) {
+        output +=
+          character;
+
+        index +=
+          1;
+
+        continue;
+      }
+
+      if (
+        character ===
+          "\\" &&
+        index +
+          1 <
+          line.length
+      ) {
+        const previous =
+          index >
+          0
+            ? line[
+                index -
+                  1
+              ]
+            : "";
+
+        const next =
+          line[
+            index +
+              1
+          ]!;
+
+        /*
+         * A doubled backslash is treated as literal LaTeX/text
+         * content rather than a Markdown math delimiter.
+         */
+        const escaped =
+          previous ===
+          "\\";
+
+        if (
+          !escaped &&
+          (
+            next ===
+              "(" ||
+            next ===
+              ")"
+          )
+        ) {
+          output +=
+            "$";
+
+          index +=
+            2;
+
+          continue;
+        }
+
+        if (
+          !escaped &&
+          (
+            next ===
+              "[" ||
+            next ===
+              "]"
+          )
+        ) {
+          output +=
+            "$$";
+
+          index +=
+            2;
+
+          continue;
+        }
+      }
+
+      output +=
+        character;
+
+      index +=
+        1;
+    }
+
+    return output;
+  }
+
   private async renderFailureIntoStreamingUi(
     ui:
       StreamingMessageUi,
@@ -2513,15 +2887,10 @@ export class LocalVaultAIView
      * replace the answer area with the exact failure
      * diagnostic.
      */
-    ui.answerBody.empty();
-
-    await MarkdownRenderer
-      .render(
-        this.app,
+    await this
+      .renderAssistantMarkdown(
         content,
         ui.answerBody,
-        "",
-        this,
       );
 
     ui.answerBody.dataset

@@ -1,0 +1,111 @@
+{
+  "id": "1e76bcb2-ac2c-4e5b-80d1-766af6e22206",
+  "title": "Can you tell me what I said about algebraic t...",
+  "createdAt": "2026-09-23T04:10:31.025Z",
+  "updatedAt": "2026-09-23T04:13:16.987Z",
+  "messages": [
+    {
+      "id": "07e3b9bd-1c6e-43ae-b90f-310e43e670dd",
+      "role": "user",
+      "content": "Can you tell me what I said about algebraic terms?",
+      "createdAt": "2026-09-23T04:10:49.708Z"
+    },
+    {
+      "id": "03cdce48-3758-41ac-81ca-eff405af5517",
+      "role": "assistant",
+      "content": "You noted that an **algebraic term** is a component of an algebraic expression separated by outermost addition or subtraction. It can contain numbers, variables, exponents, and products, such as \\((-4a^{2}b^{3})\\). The sign belongs to the term, so an expression like \\(a-3b\\) can be read as the sum of \\((a)\\) and \\((-3b)\\). A term’s numerical factor is its *numerical coefficient*. Terms can be combined only when their variable factors and corresponding exponents match, making them *like terms*.[2]",
+      "thinking": "Need what user said about algebraic terms. From sources: definition. So answer that.",
+      "createdAt": "2026-09-23T04:13:16.987Z",
+      "sources": [
+        {
+          "filePath": "6 - Full Notes/Algebraic Identity.md",
+          "heading": "Algebraic Identity",
+          "score": 0.8810991578693085,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        },
+        {
+          "filePath": "6 - Full Notes/Algebraic Term.md",
+          "heading": "Algebraic Term",
+          "score": 0.8011230234962627,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        },
+        {
+          "filePath": "6 - Full Notes/Algebraic Simplification.md",
+          "heading": "Algebraic Simplification",
+          "score": 0.7130996334475761,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        },
+        {
+          "filePath": "6 - Full Notes/Algebraic Term.md",
+          "heading": "Document",
+          "score": 0.6787050108020196,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        },
+        {
+          "filePath": "6 - Full Notes/Algebraic Identity.md",
+          "heading": "References",
+          "score": 0.6374610532659603,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        },
+        {
+          "filePath": "6 - Full Notes/Algebraic Word Problem.md",
+          "heading": "Algebraic Word Problem",
+          "score": 0.6307484513813539,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        },
+        {
+          "filePath": "6 - Full Notes/Algebraic Term.md",
+          "heading": "References",
+          "score": 0.6271373935772669,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        },
+        {
+          "filePath": "6 - Full Notes/Algebraic Identity.md",
+          "heading": "Document",
+          "score": 0.6219253664393407,
+          "sourceType": "markdown",
+          "pageStart": 0,
+          "pageEnd": 0,
+          "sectionNumber": "",
+          "sectionTitle": ""
+        }
+      ],
+      "generationDurationMs": 147274,
+      "stageTimings": {
+        "retrievalMs": 442.29999999701977,
+        "reasoningMs": 6749.399999991059,
+        "answeringMs": 35957.30000001192,
+        "modelStartupMs": 25180.741674,
+        "promptProcessingMs": 78011.84
+      }
+    }
+  ]
+}

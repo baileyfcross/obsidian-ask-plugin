@@ -4,19 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "1813aee009a4b127",
+        "id": "b02c93530333b9b2",
         "type": "tabs",
         "children": [
           {
-            "id": "136a0ad2c131031f",
+            "id": "bb6cb7d3f024ade9",
             "type": "leaf",
             "state": {
-              "type": "pdf",
+              "type": "markdown",
               "state": {
-                "file": "2 - Source Material/FoundationsOfComputation_2.3.2.pdf"
+                "file": "6 - Full Notes/Algebraic Word Problem.md",
+                "mode": "source",
+                "source": false
               },
-              "icon": "lucide-file-text",
-              "title": "FoundationsOfComputation_2.3.2"
+              "icon": "lucide-file",
+              "title": "Algebraic Word Problem"
             }
           }
         ]
@@ -196,8 +198,14 @@
       "local-vault-ai:Open Local Vault AI": false
     }
   },
-  "active": "136a0ad2c131031f",
+  "active": "bb6cb7d3f024ade9",
   "lastOpenFiles": [
+    "6 - Full Notes/Algorithm Input.md",
+    "6 - Full Notes/C# Assignment and Logical Operators.md",
+    "6 - Full Notes/Algebraic Term.md",
+    "6 - Full Notes/Algebraic Simplification.md",
+    "6 - Full Notes/Algorithm Output.md",
+    "algebraessentials.pdf.md",
     "2 - Source Material/FoundationsOfComputation_2.3.2.pdf",
     "2 - Source Material/css_thedefinitiveguide.pdf",
     "6 - Full Notes/Algebraic Identity.md",
@@ -220,11 +228,6 @@
     "6 - Full Notes/C# Numeric Types.md",
     "6 - Full Notes/C# Method Overloading.md",
     "6 - Full Notes/C# Language Version.md",
-    "6 - Full Notes/C# Iteration Statements.md",
-    "6 - Full Notes/C# Interface Implementation.md",
-    "6 - Full Notes/C# If Statements.md",
-    "6 - Full Notes/C# Grammar and Vocabulary.md",
-    "6 - Full Notes/C# Function Parameters.md",
     "6 - Full Notes",
     "2 - Source Material",
     "Untitled.base",

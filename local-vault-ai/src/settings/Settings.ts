@@ -15,6 +15,14 @@ export interface LocalVaultAISettings {
   lectureModel: string;
 
   /*
+   * LECTURE / SLIDE PERFORMANCE CONTROLS.
+   */
+  lectureThinking: boolean;
+  lectureRetrievalChunks: number;
+  lectureSourceCharacterBudget: number;
+  lectureHistoryCharacterBudget: number;
+
+  /*
    * GENERATION RUNTIME OPTIONS.
    *
    * These are sent in the per-request Ollama "options"
@@ -137,6 +145,21 @@ export const DEFAULT_SETTINGS:
   // Dedicated lecture / slide-generation model.
   lectureModel:
     "qwen3:30b-instruct",
+
+  /*
+   * Optimized lecture defaults.
+   */
+  lectureThinking:
+    false,
+
+  lectureRetrievalChunks:
+    8,
+
+  lectureSourceCharacterBudget:
+    12000,
+
+  lectureHistoryCharacterBudget:
+    2000,
 
   /*
    * Generation runtime defaults.

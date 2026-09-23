@@ -214,3 +214,36 @@
     opacity: 1;
   }
 }
+
+
+/*
+ * LaTeX / MathJax rendering inside assistant responses.
+ *
+ * Obsidian's Markdown renderer produces MathJax containers for
+ * Markdown math. Keep large equations inside the chat card rather
+ * than allowing them to expand the entire view horizontally.
+ */
+.local-vault-ai-message-body mjx-container {
+  max-width: 100%;
+}
+
+.local-vault-ai-message-body mjx-container[display="true"] {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0.75em 0;
+  padding: 0.2em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.local-vault-ai-message-body .math-block {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.local-vault-ai-message-body .math {
+  user-select: text;
+  -webkit-user-select: text;
+}

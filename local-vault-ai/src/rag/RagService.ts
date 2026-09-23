@@ -139,20 +139,23 @@ export interface RagStreamCallbacks {
 const SECTION_CONTEXT_CHUNKS_CHAT =
   6;
 
-const SECTION_CONTEXT_CHUNKS_LECTURE =
-  12;
-
 const SOURCE_CONTEXT_CHUNKS_CHAT =
   6;
-
-const SOURCE_CONTEXT_CHUNKS_LECTURE =
-  10;
 
 const MAX_CONTEXT_CHARACTERS_CHAT =
   18000;
 
-const MAX_CONTEXT_CHARACTERS_LECTURE =
-  30000;
+const DEFAULT_LECTURE_CONTEXT_CHUNKS =
+  8;
+
+const DEFAULT_LECTURE_CONTEXT_CHARACTERS =
+  12000;
+
+const DEFAULT_LECTURE_HISTORY_CHARACTERS =
+  2000;
+
+const LECTURE_HISTORY_MESSAGES =
+  2;
 
 export class RagService {
   constructor(
@@ -186,8 +189,6 @@ export class RagService {
     callbacks?:
       RagStreamCallbacks,
     signal?: AbortSignal,
-    retrievalStartedAt =
-      performance.now(),
   ): Promise<RagAnswer> {
     if (
       !this.index.isReady()
@@ -493,17 +494,27 @@ export class RagService {
         }
 
         const sources =
-          this.applyContextBudget(
-            exactSection,
-
-            this.sectionContextChunks(
-              generationProfile,
-            ),
-
-            this.contextCharacterBudget(
-              generationProfile,
-            ),
-          );
+          generationProfile
+            .mode ===
+            "lecture"
+            ? this.applyLectureSectionBudget(
+                exactSection,
+                this.sectionContextChunks(
+                  generationProfile,
+                ),
+                this.contextCharacterBudget(
+                  generationProfile,
+                ),
+              )
+            : this.applyContextBudget(
+                exactSection,
+                this.sectionContextChunks(
+                  generationProfile,
+                ),
+                this.contextCharacterBudget(
+                  generationProfile,
+                ),
+              );
 
         const integrity =
           this.validateSectionIntegrity(
@@ -616,12 +627,9 @@ export class RagService {
                   : Math.max(
                       this.settings
                         .topK,
-                      generationProfile
-                        .mode ===
-                        "lecture"
-                        ? SOURCE_CONTEXT_CHUNKS_LECTURE
-                        : this.settings
-                            .topK,
+                      this.sourceContextChunks(
+                        generationProfile,
+                      ),
                     ),
 
               textWeight:
@@ -660,7 +668,9 @@ export class RagService {
               ? Math.max(
                   this.settings
                     .topK,
-                  SOURCE_CONTEXT_CHUNKS_LECTURE,
+                  this.sourceContextChunks(
+                    generationProfile,
+                  ),
                 )
               : this.settings
                   .topK,
@@ -880,17 +890,10 @@ export class RagService {
       );
 
     const recentHistory =
-      history
-        .slice(-4)
-        .map(
-          (message) => ({
-            role:
-              message.role,
-
-            content:
-              message.content,
-          }),
-        );
+      this.buildGenerationHistory(
+        history,
+        generationProfile,
+      );
 
     const userPrompt = [
       "QUESTION",
@@ -1865,7 +1868,12 @@ export class RagService {
         : model.includes(
               "qwen3",
             )
-          ? true
+          ? generationProfile
+                .mode ===
+              "lecture"
+            ? this.settings
+                .lectureThinking
+            : true
 
           : this.settings
               .chatReasoningEffort;
@@ -2191,7 +2199,7 @@ export class RagService {
     return generationProfile
       .mode ===
       "lecture"
-      ? SECTION_CONTEXT_CHUNKS_LECTURE
+      ? this.lectureContextChunkLimit()
       : SECTION_CONTEXT_CHUNKS_CHAT;
   }
 
@@ -2202,7 +2210,7 @@ export class RagService {
     return generationProfile
       .mode ===
       "lecture"
-      ? SOURCE_CONTEXT_CHUNKS_LECTURE
+      ? this.lectureContextChunkLimit()
       : SOURCE_CONTEXT_CHUNKS_CHAT;
   }
 
@@ -2213,8 +2221,382 @@ export class RagService {
     return generationProfile
       .mode ===
       "lecture"
-      ? MAX_CONTEXT_CHARACTERS_LECTURE
+      ? this.lectureContextCharacterBudget()
       : MAX_CONTEXT_CHARACTERS_CHAT;
+  }
+
+  private lectureContextChunkLimit():
+    number {
+    const configured =
+      Math.trunc(
+        this.settings
+          .lectureRetrievalChunks,
+      );
+
+    if (
+      !Number.isFinite(
+        configured,
+      ) ||
+      configured <=
+        0
+    ) {
+      return DEFAULT_LECTURE_CONTEXT_CHUNKS;
+    }
+
+    return Math.max(
+      1,
+      Math.min(
+        12,
+        configured,
+      ),
+    );
+  }
+
+  private lectureContextCharacterBudget():
+    number {
+    const configured =
+      Math.trunc(
+        this.settings
+          .lectureSourceCharacterBudget,
+      );
+
+    if (
+      !Number.isFinite(
+        configured,
+      ) ||
+      configured <=
+        0
+    ) {
+      return DEFAULT_LECTURE_CONTEXT_CHARACTERS;
+    }
+
+    return Math.max(
+      4000,
+      Math.min(
+        30000,
+        configured,
+      ),
+    );
+  }
+
+  private lectureHistoryCharacterBudget():
+    number {
+    const configured =
+      Math.trunc(
+        this.settings
+          .lectureHistoryCharacterBudget,
+      );
+
+    if (
+      !Number.isFinite(
+        configured,
+      ) ||
+      configured <
+        0
+    ) {
+      return DEFAULT_LECTURE_HISTORY_CHARACTERS;
+    }
+
+    return Math.max(
+      0,
+      Math.min(
+        12000,
+        configured,
+      ),
+    );
+  }
+
+  private buildGenerationHistory(
+    history:
+      ConversationMessage[],
+
+    generationProfile:
+      RagGenerationProfile,
+  ): {
+    role:
+      ConversationMessage[
+        "role"
+      ];
+
+    content:
+      string;
+  }[] {
+    if (
+      generationProfile
+        .mode !==
+      "lecture"
+    ) {
+      return history
+        .slice(-4)
+        .map(
+          (message) => ({
+            role:
+              message.role,
+
+            content:
+              message.content,
+          }),
+        );
+    }
+
+    const budget =
+      this.lectureHistoryCharacterBudget();
+
+    if (
+      budget <=
+      0
+    ) {
+      return [];
+    }
+
+    const recent =
+      history.slice(
+        -LECTURE_HISTORY_MESSAGES,
+      );
+
+    if (
+      recent.length ===
+      0
+    ) {
+      return [];
+    }
+
+    const perMessageBudget =
+      Math.max(
+        200,
+        Math.floor(
+          budget /
+          recent.length,
+        ),
+      );
+
+    return recent.map(
+      (message) => ({
+        role:
+          message.role,
+
+        content:
+          this.truncatePromptText(
+            message.content,
+            perMessageBudget,
+          ),
+      }),
+    );
+  }
+
+  private applyLectureSectionBudget(
+    sources:
+      RetrievedChunk[],
+
+    maximumChunks:
+      number,
+
+    maximumCharacters:
+      number,
+  ): RetrievedChunk[] {
+    if (
+      sources.length ===
+      0
+    ) {
+      return [];
+    }
+
+    const sampled =
+      this.selectEvenlySpacedChunks(
+        sources,
+        maximumChunks,
+      );
+
+    if (
+      sampled.length ===
+      0
+    ) {
+      return [];
+    }
+
+    const perChunkBudget =
+      Math.max(
+        600,
+        Math.floor(
+          maximumCharacters /
+          sampled.length,
+        ),
+      );
+
+    return sampled.map(
+      (source) => ({
+        ...source,
+
+        content:
+          this.truncatePromptText(
+            source.content,
+            perChunkBudget,
+          ),
+      }),
+    );
+  }
+
+  private selectEvenlySpacedChunks(
+    sources:
+      RetrievedChunk[],
+
+    maximumChunks:
+      number,
+  ): RetrievedChunk[] {
+    if (
+      sources.length <=
+      maximumChunks
+    ) {
+      return [
+        ...sources,
+      ];
+    }
+
+    if (
+      maximumChunks <=
+      1
+    ) {
+      return [
+        sources[0]!,
+      ];
+    }
+
+    const selected:
+      RetrievedChunk[] = [];
+
+    const used =
+      new Set<number>();
+
+    for (
+      let position = 0;
+      position <
+      maximumChunks;
+      position +=
+      1
+    ) {
+      const rawIndex =
+        (
+          position *
+          (
+            sources.length -
+            1
+          )
+        ) /
+        (
+          maximumChunks -
+          1
+        );
+
+      let index =
+        Math.round(
+          rawIndex,
+        );
+
+      while (
+        used.has(
+          index,
+        ) &&
+        index <
+          sources.length -
+          1
+      ) {
+        index +=
+          1;
+      }
+
+      while (
+        used.has(
+          index,
+        ) &&
+        index >
+          0
+      ) {
+        index -=
+          1;
+      }
+
+      if (
+        used.has(
+          index,
+        )
+      ) {
+        continue;
+      }
+
+      used.add(
+        index,
+      );
+
+      selected.push(
+        sources[index]!,
+      );
+    }
+
+    return selected;
+  }
+
+  private truncatePromptText(
+    value:
+      string,
+
+    maximumCharacters:
+      number,
+  ): string {
+    if (
+      value.length <=
+      maximumCharacters
+    ) {
+      return value;
+    }
+
+    if (
+      maximumCharacters <=
+      80
+    ) {
+      return value.slice(
+        0,
+        maximumCharacters,
+      );
+    }
+
+    const marker =
+      "\n\n[...context trimmed for performance...]\n\n";
+
+    const usable =
+      Math.max(
+        1,
+        maximumCharacters -
+          marker.length,
+      );
+
+    const headLength =
+      Math.ceil(
+        usable *
+        0.65,
+      );
+
+    const tailLength =
+      Math.max(
+        0,
+        usable -
+          headLength,
+      );
+
+    return (
+      value.slice(
+        0,
+        headLength,
+      ) +
+      marker +
+      (
+        tailLength >
+        0
+          ? value.slice(
+              -tailLength,
+            )
+          : ""
+      )
+    );
   }
 
 }

@@ -3,7 +3,7 @@
   "embeddingProvider": "local",
   "embeddingIdentity": "local:onnxruntime-web:Xenova/all-MiniLM-L6-v2:model_quantized:max256:attention-mask-mean-pooling:l2-normalized:v1",
   "embeddingDimensions": 384,
-  "lastIndexedAt": "2026-09-14T06:12:11.515Z",
+  "lastIndexedAt": "2026-09-23T04:15:54.185Z",
   "documents": {
     "6 - Full Notes/C# Variable Declaration.md": {
       "hash": "0b8461bf8e89a5572a2d67cc1fe6fd1f8f00da4303e5385dd4c4f4eb93d3184f",
@@ -1724,6 +1724,14 @@
       "fileName": "css_thedefinitiveguide.pdf",
       "title": "CSS: The Definitive Guide",
       "pageCount": 1091
+    },
+    "algebraessentials.pdf.md": {
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime": 1790136950148,
+      "chunkIds": [],
+      "sourceType": "markdown",
+      "fileName": "algebraessentials.pdf.md",
+      "title": "algebraessentials.pdf"
     }
   }
 }

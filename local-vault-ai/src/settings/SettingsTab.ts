@@ -368,6 +368,150 @@ export class LocalVaultAISettingTab
 
     new Setting(containerEl)
       .setName(
+        "Lecture performance",
+      )
+      .setHeading();
+
+    new Setting(containerEl)
+      .setName(
+        "Lecture model thinking",
+      )
+      .setDesc(
+        "Enables Qwen3 thinking for lecture and slide requests. Leave this off for source-grounded slide generation when speed matters.",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(
+            this.localPlugin
+              .settings
+              .lectureThinking,
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .lectureThinking =
+                  value;
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Lecture retrieval chunks",
+      )
+      .setDesc(
+        "Maximum source chunks sent to the lecture model. Exact-section lectures distribute selected chunks across the whole section. 8 is recommended.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("4", "4 — fastest")
+          .addOption("6", "6 — fast")
+          .addOption("8", "8 — recommended")
+          .addOption("10", "10 — more coverage")
+          .addOption("12", "12 — maximum coverage")
+          .setValue(
+            String(
+              this.localPlugin
+                .settings
+                .lectureRetrievalChunks,
+            ),
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .lectureRetrievalChunks =
+                  Number.parseInt(
+                    value,
+                    10,
+                  );
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Lecture source-text budget",
+      )
+      .setDesc(
+        "Maximum retrieved source text sent to the lecture model. This directly affects prompt-processing time. Start at 12,000 characters.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("8000", "8,000 characters — fastest")
+          .addOption("12000", "12,000 characters — recommended")
+          .addOption("16000", "16,000 characters")
+          .addOption("20000", "20,000 characters")
+          .addOption("30000", "30,000 characters — previous behavior")
+          .setValue(
+            String(
+              this.localPlugin
+                .settings
+                .lectureSourceCharacterBudget,
+            ),
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .lectureSourceCharacterBudget =
+                  Number.parseInt(
+                    value,
+                    10,
+                  );
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
+        "Lecture conversation-history budget",
+      )
+      .setDesc(
+        "Maximum prior-conversation text included in lecture generation. A small budget prevents a long previous lecture from being processed again in full.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("0", "Off — no prior lecture history")
+          .addOption("1000", "1,000 characters — fastest")
+          .addOption("2000", "2,000 characters — recommended")
+          .addOption("4000", "4,000 characters")
+          .addOption("8000", "8,000 characters")
+          .setValue(
+            String(
+              this.localPlugin
+                .settings
+                .lectureHistoryCharacterBudget,
+            ),
+          )
+          .onChange(
+            async (value) => {
+              this.localPlugin
+                .settings
+                .lectureHistoryCharacterBudget =
+                  Number.parseInt(
+                    value,
+                    10,
+                  );
+
+              await this.localPlugin
+                .saveSettings();
+            },
+          ),
+      );
+
+    new Setting(containerEl)
+      .setName(
         "Generation performance",
       )
       .setHeading();

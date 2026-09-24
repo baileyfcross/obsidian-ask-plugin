@@ -60,9 +60,32 @@ import {
   FileSystemGate,
   FileSystemOperationError,
 } from "./FileSystemGate";
+import {
+  IndexFailureStore,
+} from "./IndexFailureStore";
 
 const PERSIST_DEBOUNCE_MS =
   2200;
+
+/*
+ * Full rebuilds can run for a long time. Save a durable recovery
+ * snapshot periodically so a reload/crash does not throw away the
+ * entire run. The checkpoint is intentionally coarse because saving
+ * the full Orama index is expensive.
+ */
+const REBUILD_CHECKPOINT_SOURCE_INTERVAL =
+  1000;
+
+const REBUILD_CHECKPOINT_MAX_AGE_MS =
+  10 * 60 * 1000;
+
+/*
+ * Rebuild progress used to update the chat UI on virtually every page
+ * and embedding batch. Throttle those DOM-facing updates so indexing
+ * cannot flood Obsidian's renderer.
+ */
+const REBUILD_STATUS_MIN_INTERVAL_MS =
+  200;
 
 const NO_SECTION_KEY =
   "__none__";
@@ -128,6 +151,20 @@ interface PreparedDocument {
   chunks: EmbeddedChunk[];
 }
 
+interface RebuildCheckpointState {
+  version: 1;
+  indexVersion: number;
+  embeddingProvider: string;
+  embeddingIdentity: string;
+  embeddingDimensions: number;
+  indexPdfSources: boolean;
+  startedAt: number;
+  lastCheckpointAt: number;
+  completedSources: number;
+  totalSources: number;
+  snapshotSaved: boolean;
+}
+
 interface RebuildProgress {
   totalSources: number;
   completedSources: number;
@@ -161,6 +198,9 @@ interface RebuildProgress {
 
   skippedPdfs:
     number;
+
+  failedSources:
+    number;
 }
 
 export class IndexManager {
@@ -183,7 +223,13 @@ export class IndexManager {
   private readonly knowledgeIndex:
     KnowledgeIndex;
 
+  private readonly indexFailureStore:
+    IndexFailureStore;
+
   private readonly manifestPath:
+    string;
+
+  private readonly rebuildCheckpointPath:
     string;
 
   /*
@@ -233,6 +279,15 @@ export class IndexManager {
     new AsyncSemaphore(1);
 
   /*
+   * Reading several large PDFs from Obsidian's adapter at the same time
+   * can stall Electron even when page extraction itself is bounded. Keep
+   * only the binary file read serialized; extraction/embedding can still
+   * overlap after the bytes are in memory.
+   */
+  private readonly pdfReadSemaphore =
+    new AsyncSemaphore(1);
+
+  /*
    * Actual vault/plugin filesystem I/O is throttled
    * separately from source preparation. This allows
    * PDF extraction/chunking/embedding to overlap
@@ -246,6 +301,27 @@ export class IndexManager {
 
   private persistInFlight:
     Promise<void> | null =
+    null;
+
+  private rebuildCheckpointInFlight:
+    Promise<void> | null =
+    null;
+
+  private lastRebuildCheckpointCompleted =
+    0;
+
+  private lastRebuildCheckpointAt =
+    0;
+
+  private lastRebuildStatusUpdateAt =
+    0;
+
+  private activeRebuildProgress:
+    RebuildProgress | null =
+    null;
+
+  private activeRebuildStartedAt:
+    number | null =
     null;
 
   constructor(
@@ -262,6 +338,8 @@ export class IndexManager {
       KnowledgeIndex,
     manifestPath:
       string,
+    indexFailureStore:
+      IndexFailureStore,
   ) {
     this.app = app;
     this.settings =
@@ -276,6 +354,25 @@ export class IndexManager {
       knowledgeIndex;
     this.manifestPath =
       manifestPath;
+
+    const manifestSlash =
+      manifestPath.lastIndexOf(
+        "/",
+      );
+
+    const manifestDirectory =
+      manifestSlash >= 0
+        ? manifestPath.slice(
+            0,
+            manifestSlash + 1,
+          )
+        : "";
+
+    this.rebuildCheckpointPath =
+      `${manifestDirectory}index-rebuild-state.json`;
+
+    this.indexFailureStore =
+      indexFailureStore;
 
     this.fileSystem =
       new FileSystemGate(
@@ -390,6 +487,23 @@ if (
                   .embeddingDimensions,
               ),
         );
+
+      const interruptedRebuild =
+        await this.loadRebuildCheckpoint();
+
+      if (interruptedRebuild) {
+        const savedText =
+          interruptedRebuild.snapshotSaved
+            ? `${interruptedRebuild.completedSources}/${interruptedRebuild.totalSources} source(s) are preserved in the latest checkpoint.`
+            : "No durable source checkpoint had been written yet.";
+
+        this.setStatus(
+          "needs-rebuild",
+          `An interrupted knowledge-index rebuild was detected. ${savedText} Run Rebuild index to resume from the saved checkpoint when possible.`,
+        );
+
+        return;
+      }
 
       this.setStatus(
         "ready",
@@ -534,6 +648,9 @@ if (
             });
       }
 
+      await this.indexFailureStore
+        .pruneMissingSources();
+
       const embeddingDescriptor =
         this.embeddings
           .getDescriptor();
@@ -553,29 +670,49 @@ if (
         await this.embeddings
           .embeddingDimension();
 
-      await this
-        .knowledgeIndex
-        .createEmpty(
-          dimensions,
-        );
+      const previousCheckpoint =
+        await this.loadRebuildCheckpoint();
 
-      this.manifest =
-        createEmptyManifest(
+      const canResume =
+        this.canResumeRebuild(
+          previousCheckpoint,
           embeddingDescriptor,
           dimensions,
         );
 
-      /*
-       * Persist the indexing mode with the manifest so
-       * a later Obsidian restart can detect a settings
-       * mismatch before loading stale PDF chunks.
-       */
-      this.manifest
-        .indexPdfSources =
-        this.settings
-          .indexPdfSources;
+      const rebuildStartedAt =
+        canResume &&
+        previousCheckpoint
+          ? previousCheckpoint.startedAt
+          : Date.now();
 
-      const files =
+      if (!canResume) {
+        await this.clearRebuildCheckpoint();
+
+        await this
+          .knowledgeIndex
+          .createEmpty(
+            dimensions,
+          );
+
+        this.manifest =
+          createEmptyManifest(
+            embeddingDescriptor,
+            dimensions,
+          );
+
+        /*
+         * Persist the indexing mode with the manifest so
+         * a later Obsidian restart can detect a settings
+         * mismatch before loading stale PDF chunks.
+         */
+        this.manifest
+          .indexPdfSources =
+          this.settings
+            .indexPdfSources;
+      }
+
+      const allFiles =
         this.app.vault
           .getFiles()
           .filter(
@@ -584,6 +721,16 @@ if (
                 file,
               ),
           );
+
+      const files =
+        canResume
+          ? allFiles.filter(
+              (file) =>
+                !this.isSourceSavedInCheckpoint(
+                  file,
+                ),
+            )
+          : allFiles;
 
       const sourceConcurrency =
         this.sourceConcurrency();
@@ -604,13 +751,26 @@ if (
           this.embeddingConcurrency(),
         );
 
+      const resumedCounts =
+        canResume
+          ? this.rebuildResumeCounts(
+              allFiles,
+            )
+          : {
+              sources: 0,
+              chunks: 0,
+              pdfPages: 0,
+              markdown: 0,
+              pdf: 0,
+            };
+
       const progress:
         RebuildProgress = {
         totalSources:
-          files.length,
+          allFiles.length,
 
         completedSources:
-          0,
+          resumedCounts.sources,
 
         activeSources:
           new Set<string>(),
@@ -619,32 +779,72 @@ if (
           0,
 
         completedPdfPages:
-          0,
+          resumedCounts.pdfPages,
 
         knownPdfPages:
-          0,
+          resumedCounts.pdfPages,
 
         activeEmbeddingRequests:
           0,
 
         knownChunks:
-          0,
+          resumedCounts.chunks,
 
         embeddedChunks:
-          0,
+          resumedCounts.chunks,
 
         markdownCompleted:
-          0,
+          resumedCounts.markdown,
 
         pdfCompleted:
-          0,
+          resumedCounts.pdf,
 
         skippedPdfs:
           0,
+
+        failedSources:
+          0,
       };
+
+      this.activeRebuildProgress =
+        progress;
+      this.activeRebuildStartedAt =
+        rebuildStartedAt;
+
+      this.lastRebuildCheckpointCompleted =
+        progress.completedSources;
+      this.lastRebuildCheckpointAt =
+        previousCheckpoint?.lastCheckpointAt ??
+        rebuildStartedAt;
+
+      if (!canResume) {
+        await this.saveRebuildCheckpoint({
+          version: 1,
+          indexVersion:
+            INDEX_VERSION,
+          embeddingProvider:
+            embeddingDescriptor.provider,
+          embeddingIdentity:
+            embeddingDescriptor.identity,
+          embeddingDimensions:
+            dimensions,
+          indexPdfSources:
+            this.settings.indexPdfSources,
+          startedAt:
+            rebuildStartedAt,
+          lastCheckpointAt:
+            rebuildStartedAt,
+          completedSources: 0,
+          totalSources:
+            allFiles.length,
+          snapshotSaved:
+            false,
+        });
+      }
 
       this.updateRebuildStatus(
         progress,
+        true,
       );
 
       await runBoundedPool(
@@ -691,6 +891,12 @@ if (
                 },
               );
 
+            await this
+              .indexFailureStore
+              .clear(
+                file.path,
+              );
+
             if (
               prepared
                 .source
@@ -714,8 +920,35 @@ if (
                 .skippedPdfs +=
                 1;
 
+              await this
+                .recordIndexFailure(
+                  file,
+                  error,
+                );
+
               console.warn(
                 `[Local Vault AI] ${error.message}`,
+              );
+
+              return;
+            }
+
+            if (
+              error instanceof
+              FileSystemOperationError
+            ) {
+              progress
+                .failedSources +=
+                1;
+
+              await this
+                .recordIndexFailure(
+                  file,
+                  error,
+                );
+
+              console.warn(
+                `[Local Vault AI] Skipping failed source ${file.path}: ${error.message}`,
               );
 
               return;
@@ -735,21 +968,49 @@ if (
             this.updateRebuildStatus(
               progress,
             );
+
+            try {
+              await this.maybeCheckpointRebuild(
+                progress,
+                rebuildStartedAt,
+                embeddingDescriptor,
+                dimensions,
+              );
+            } catch (checkpointError) {
+              console.warn(
+                "[Local Vault AI] Could not save an intermediate rebuild checkpoint.",
+                checkpointError,
+              );
+            }
           }
         },
       );
 
-      /*
-       * Full rebuild persistence remains one final
-       * serialized save. We do not serialize the
-       * whole Orama index after every PDF.
-       */
+      if (
+        this.rebuildCheckpointInFlight
+      ) {
+        await this.rebuildCheckpointInFlight;
+      }
+
+      this.setStatus(
+        "indexing",
+        `Saving final knowledge index · ${progress.completedSources}/${progress.totalSources} sources processed...`,
+      );
+
+      await this.yieldToUi();
       await this.persistNow();
+      await this.clearRebuildCheckpoint();
 
       const skippedText =
         progress.skippedPdfs >
         0
           ? ` Skipped ${progress.skippedPdfs} PDF(s) with no extractable text.`
+          : "";
+
+      const failedText =
+        progress.failedSources >
+        0
+          ? ` Skipped ${progress.failedSources} source(s) that failed to index. Open Failed indexes in the chat toolbar for details.`
           : "";
 
       this.setStatus(
@@ -758,11 +1019,12 @@ if (
           .indexPdfSources
           ? (
               `Indexed ${progress.markdownCompleted} Markdown file(s) and ` +
-              `${progress.pdfCompleted} PDF file(s).${skippedText}`
+              `${progress.pdfCompleted} PDF file(s).${skippedText}${failedText}`
             )
           : (
               `Indexed ${progress.markdownCompleted} Markdown file(s). ` +
-              "PDF/source indexing is disabled; this is a Markdown-only knowledge index."
+              "PDF/source indexing is disabled; this is a Markdown-only knowledge index." +
+              failedText
             ),
       );
     } catch (error) {
@@ -793,6 +1055,11 @@ if (
 
       throw error;
     } finally {
+      this.activeRebuildProgress =
+        null;
+      this.activeRebuildStartedAt =
+        null;
+
       if (lease) {
         await lease.release();
       }
@@ -831,6 +1098,12 @@ if (
     file: TAbstractFile,
     oldPath: string,
   ): void {
+    void this
+      .indexFailureStore
+      .clear(
+        oldPath,
+      );
+
     if (
       !this.settings
         .autoIndex
@@ -884,6 +1157,12 @@ if (
   handleDelete(
     file: TAbstractFile,
   ): void {
+    void this
+      .indexFailureStore
+      .clear(
+        file.path,
+      );
+
     if (
       !this.settings
         .autoIndex
@@ -1019,6 +1298,12 @@ if (
           },
         );
 
+      await this
+        .indexFailureStore
+        .clear(
+          file.path,
+        );
+
       this.schedulePersist();
       this.refreshStatusCounts();
     } catch (error) {
@@ -1026,9 +1311,19 @@ if (
         error instanceof
         FileSystemOperationError
       ) {
+        await this
+          .recordIndexFailure(
+            file,
+            error,
+          );
+
+        console.warn(
+          `[Local Vault AI] Skipping failed source ${file.path}: ${error.message}`,
+        );
+
         this.setStatus(
-          "error",
-          error.message,
+          "ready",
+          `Skipped ${file.path} after indexing failed. Open Failed indexes in the chat toolbar for details.`,
         );
 
         return;
@@ -1038,13 +1333,19 @@ if (
         error instanceof
         PdfNoTextError
       ) {
+        await this
+          .recordIndexFailure(
+            file,
+            error,
+          );
+
         console.warn(
           `[Local Vault AI] ${error.message}`,
         );
 
         this.setStatus(
           "ready",
-          error.message,
+          `${error.message} Open Failed indexes in the chat toolbar for details.`,
         );
 
         return;
@@ -1094,6 +1395,40 @@ if (
         .isReady()
     ) {
       await this.persistNow();
+
+      if (
+        this.activeRebuildProgress &&
+        this.activeRebuildStartedAt !==
+          null
+      ) {
+        const descriptor =
+          this.embeddings
+            .getDescriptor();
+
+        await this.saveRebuildCheckpoint({
+          version: 1,
+          indexVersion:
+            INDEX_VERSION,
+          embeddingProvider:
+            descriptor.provider,
+          embeddingIdentity:
+            descriptor.identity,
+          embeddingDimensions:
+            this.manifest.embeddingDimensions,
+          indexPdfSources:
+            this.settings.indexPdfSources,
+          startedAt:
+            this.activeRebuildStartedAt,
+          lastCheckpointAt:
+            Date.now(),
+          completedSources:
+            this.counts().documents,
+          totalSources:
+            this.activeRebuildProgress.totalSources,
+          snapshotSaved:
+            true,
+        });
+      }
     }
   }
 
@@ -1360,13 +1695,17 @@ if (
     }
 
     const buffer =
-      await this.fileSystem
+      await this.pdfReadSemaphore
         .run(
-          "reading PDF source",
-          file.path,
           async () =>
-            this.app.vault
-              .readBinary(file),
+            this.fileSystem
+              .run(
+                "reading PDF source",
+                file.path,
+                async () =>
+                  this.app.vault
+                    .readBinary(file),
+              ),
         );
 
     const bytes =
@@ -2027,6 +2366,361 @@ if (
     this.refreshStatusCounts();
   }
 
+  private async maybeCheckpointRebuild(
+    progress: RebuildProgress,
+    rebuildStartedAt: number,
+    embeddingDescriptor: {
+      provider: string;
+      identity: string;
+    },
+    dimensions: number,
+  ): Promise<void> {
+    if (
+      this.rebuildCheckpointInFlight
+    ) {
+      return;
+    }
+
+    const now =
+      Date.now();
+
+    const sourcesSinceCheckpoint =
+      progress.completedSources -
+      this.lastRebuildCheckpointCompleted;
+
+    const checkpointDueByCount =
+      sourcesSinceCheckpoint >=
+      REBUILD_CHECKPOINT_SOURCE_INTERVAL;
+
+    const checkpointDueByTime =
+      sourcesSinceCheckpoint > 0 &&
+      now -
+        this.lastRebuildCheckpointAt >=
+        REBUILD_CHECKPOINT_MAX_AGE_MS;
+
+    if (
+      !checkpointDueByCount &&
+      !checkpointDueByTime
+    ) {
+      return;
+    }
+
+    const checkpointPromise =
+      (async () => {
+        this.setStatus(
+          "indexing",
+          `Saving rebuild checkpoint · ${progress.completedSources}/${progress.totalSources} sources processed...`,
+        );
+
+        await this.yieldToUi();
+        await this.persistNow();
+
+        const checkpointAt =
+          Date.now();
+
+        await this.saveRebuildCheckpoint({
+          version: 1,
+          indexVersion:
+            INDEX_VERSION,
+          embeddingProvider:
+            embeddingDescriptor.provider,
+          embeddingIdentity:
+            embeddingDescriptor.identity,
+          embeddingDimensions:
+            dimensions,
+          indexPdfSources:
+            this.settings.indexPdfSources,
+          startedAt:
+            rebuildStartedAt,
+          lastCheckpointAt:
+            checkpointAt,
+          completedSources:
+            this.counts().documents,
+          totalSources:
+            progress.totalSources,
+          snapshotSaved:
+            true,
+        });
+
+        this.lastRebuildCheckpointCompleted =
+          progress.completedSources;
+        this.lastRebuildCheckpointAt =
+          checkpointAt;
+
+        this.updateRebuildStatus(
+          progress,
+          true,
+        );
+      })();
+
+    this.rebuildCheckpointInFlight =
+      checkpointPromise;
+
+    try {
+      await checkpointPromise;
+    } finally {
+      if (
+        this.rebuildCheckpointInFlight ===
+        checkpointPromise
+      ) {
+        this.rebuildCheckpointInFlight =
+          null;
+      }
+    }
+  }
+
+  private canResumeRebuild(
+    checkpoint:
+      RebuildCheckpointState | null,
+    embeddingDescriptor: {
+      provider: string;
+      identity: string;
+    },
+    dimensions: number,
+  ): boolean {
+    if (
+      !checkpoint ||
+      !checkpoint.snapshotSaved ||
+      !this.manifest ||
+      !this.knowledgeIndex.isReady()
+    ) {
+      return false;
+    }
+
+    return (
+      checkpoint.indexVersion ===
+        INDEX_VERSION &&
+      checkpoint.embeddingProvider ===
+        embeddingDescriptor.provider &&
+      checkpoint.embeddingIdentity ===
+        embeddingDescriptor.identity &&
+      checkpoint.embeddingDimensions ===
+        dimensions &&
+      checkpoint.indexPdfSources ===
+        this.settings.indexPdfSources &&
+      this.manifest.version ===
+        INDEX_VERSION &&
+      this.manifest.embeddingProvider ===
+        embeddingDescriptor.provider &&
+      this.manifest.embeddingIdentity ===
+        embeddingDescriptor.identity &&
+      this.manifest.embeddingDimensions ===
+        dimensions &&
+      this.manifestPdfSetting() ===
+        this.settings.indexPdfSources
+    );
+  }
+
+  private isSourceSavedInCheckpoint(
+    file: TFile,
+  ): boolean {
+    if (!this.manifest) {
+      return false;
+    }
+
+    const existing =
+      this.manifest.documents[
+        file.path
+      ];
+
+    if (!existing) {
+      return false;
+    }
+
+    const sourceType:
+      SourceType =
+      file.extension
+        .toLowerCase() ===
+      "pdf"
+        ? "pdf"
+        : "markdown";
+
+    return (
+      existing.mtime ===
+        file.stat.mtime &&
+      existing.sourceType ===
+        sourceType
+    );
+  }
+
+  private rebuildResumeCounts(
+    allFiles: TFile[],
+  ): {
+    sources: number;
+    chunks: number;
+    pdfPages: number;
+    markdown: number;
+    pdf: number;
+  } {
+    if (!this.manifest) {
+      return {
+        sources: 0,
+        chunks: 0,
+        pdfPages: 0,
+        markdown: 0,
+        pdf: 0,
+      };
+    }
+
+    let sources = 0;
+    let chunks = 0;
+    let pdfPages = 0;
+    let markdown = 0;
+    let pdf = 0;
+
+    for (const file of allFiles) {
+      if (
+        !this.isSourceSavedInCheckpoint(
+          file,
+        )
+      ) {
+        continue;
+      }
+
+      const document =
+        this.manifest.documents[
+          file.path
+        ];
+
+      if (!document) {
+        continue;
+      }
+
+      sources += 1;
+      chunks +=
+        document.chunkIds.length;
+
+      if (
+        document.sourceType ===
+        "pdf"
+      ) {
+        pdf += 1;
+        pdfPages +=
+          document.pageCount ??
+          0;
+      } else {
+        markdown += 1;
+      }
+    }
+
+    return {
+      sources,
+      chunks,
+      pdfPages,
+      markdown,
+      pdf,
+    };
+  }
+
+  private async loadRebuildCheckpoint():
+    Promise<
+      RebuildCheckpointState | null
+    > {
+    try {
+      const exists =
+        await this.app.vault.adapter.exists(
+          this.rebuildCheckpointPath,
+        );
+
+      if (!exists) {
+        return null;
+      }
+
+      const raw =
+        await this.app.vault.adapter.read(
+          this.rebuildCheckpointPath,
+        );
+
+      const parsed =
+        JSON.parse(
+          raw,
+        ) as
+          Partial<RebuildCheckpointState>;
+
+      if (
+        parsed.version !== 1 ||
+        typeof parsed.indexVersion !==
+          "number" ||
+        typeof parsed.embeddingProvider !==
+          "string" ||
+        typeof parsed.embeddingIdentity !==
+          "string" ||
+        typeof parsed.embeddingDimensions !==
+          "number" ||
+        typeof parsed.indexPdfSources !==
+          "boolean" ||
+        typeof parsed.startedAt !==
+          "number" ||
+        typeof parsed.lastCheckpointAt !==
+          "number" ||
+        typeof parsed.completedSources !==
+          "number" ||
+        typeof parsed.totalSources !==
+          "number" ||
+        typeof parsed.snapshotSaved !==
+          "boolean"
+      ) {
+        return null;
+      }
+
+      return parsed as
+        RebuildCheckpointState;
+    } catch (error) {
+      console.warn(
+        "[Local Vault AI] Could not read rebuild checkpoint state.",
+        error,
+      );
+
+      return null;
+    }
+  }
+
+  private async saveRebuildCheckpoint(
+    state:
+      RebuildCheckpointState,
+  ): Promise<void> {
+    await this.app.vault.adapter.write(
+      this.rebuildCheckpointPath,
+      JSON.stringify(
+        state,
+        null,
+        2,
+      ),
+    );
+  }
+
+  private async clearRebuildCheckpoint():
+    Promise<void> {
+    try {
+      if (
+        await this.app.vault.adapter.exists(
+          this.rebuildCheckpointPath,
+        )
+      ) {
+        await this.app.vault.adapter.remove(
+          this.rebuildCheckpointPath,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "[Local Vault AI] Could not clear rebuild checkpoint state.",
+        error,
+      );
+    }
+  }
+
+  private async yieldToUi():
+    Promise<void> {
+    await new Promise<void>(
+      (resolve) => {
+        window.setTimeout(
+          resolve,
+          0,
+        );
+      },
+    );
+  }
+
   private embeddingText(
     file: TFile,
     source:
@@ -2096,6 +2790,65 @@ if (
 
     return lines.join(
       "\n",
+    );
+  }
+
+  private async recordIndexFailure(
+    file: TFile,
+    error: unknown,
+  ): Promise<void> {
+    const message =
+      this.errorText(
+        error,
+      );
+
+    await this
+      .indexFailureStore
+      .record({
+        path:
+          file.path,
+
+        extension:
+          file.extension,
+
+        message,
+
+        attempts:
+          this.indexFailureAttempts(
+            message,
+          ),
+      });
+  }
+
+  private indexFailureAttempts(
+    message: string,
+  ): number {
+    const match =
+      message.match(
+        /\(attempt\s+(\d+)\s+of\s+(\d+)\)/i,
+      );
+
+    if (!match) {
+      return 1;
+    }
+
+    const attempts =
+      Number.parseInt(
+        match[2] ?? "1",
+        10,
+      );
+
+    if (
+      !Number.isFinite(
+        attempts,
+      )
+    ) {
+      return 1;
+    }
+
+    return Math.max(
+      1,
+      attempts,
     );
   }
 
@@ -2185,7 +2938,23 @@ if (
   private updateRebuildStatus(
     progress:
       RebuildProgress,
+    force = false,
   ): void {
+    const now =
+      Date.now();
+
+    if (
+      !force &&
+      now -
+        this.lastRebuildStatusUpdateAt <
+        REBUILD_STATUS_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    this.lastRebuildStatusUpdateAt =
+      now;
+
     const activeNames =
       Array.from(
         progress

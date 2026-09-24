@@ -1,6 +1,6 @@
 {
 	"name": "local-vault-ai",
-	"version": "0.4.0",
+	"version": "0.4.2",
 	"description": "Local RAG assistant for an Obsidian vault using Ollama and Orama.",
 	"main": "main.js",
 	"scripts": {

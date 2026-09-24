@@ -14,6 +14,7 @@ import { ModelRuntimeManager } from "./ollama/ModelRuntimeManager";
 import { EmbeddingServiceRouter } from "./embeddings/EmbeddingServiceRouter";
 import { KnowledgeIndex } from "./search/KnowledgeIndex";
 import { IndexManager } from "./indexing/IndexManager";
+import { IndexFailureStore } from "./indexing/IndexFailureStore";
 import {
   ensurePluginPaths,
   getPluginPaths,
@@ -34,6 +35,7 @@ export default class LocalVaultAIPlugin extends Plugin {
   embeddingService!: EmbeddingServiceRouter;
   knowledgeIndex!: KnowledgeIndex;
   indexManager!: IndexManager;
+  indexFailureStore!: IndexFailureStore;
   conversationStore!: ConversationStore;
   ragService!: RagService;
 
@@ -51,6 +53,18 @@ export default class LocalVaultAIPlugin extends Plugin {
       this.app,
       this.paths,
     );
+
+    this.indexFailureStore =
+      new IndexFailureStore(
+        this.app,
+        this.paths.pluginDir,
+      );
+
+    await this.indexFailureStore
+      .load();
+
+    await this.indexFailureStore
+      .pruneMissingSources();
 
     this.ollama = new OllamaClient(
       this.settings.ollamaUrl,
@@ -84,6 +98,7 @@ export default class LocalVaultAIPlugin extends Plugin {
         this.embeddingService,
         this.knowledgeIndex,
         this.paths.manifestPath,
+        this.indexFailureStore,
       );
 
     this.conversationStore =
@@ -132,8 +147,14 @@ export default class LocalVaultAIPlugin extends Plugin {
       callback: async () => {
         try {
           await this.indexManager.rebuildAll();
+
+          const failureCount =
+            this.indexFailureStore.count;
+
           new Notice(
-            "Local Vault AI index rebuilt successfully.",
+            failureCount > 0
+              ? `Local Vault AI index rebuilt with ${failureCount} failed source(s). Open Failed indexes in chat for details.`
+              : "Local Vault AI index rebuilt successfully.",
           );
         } catch (error) {
           new Notice(

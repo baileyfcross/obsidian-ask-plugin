@@ -19,6 +19,9 @@ import {
 import {
   SourceNavigator,
 } from "./SourceNavigator";
+import {
+  IndexFailuresModal,
+} from "./IndexFailuresModal";
 
 export const VIEW_TYPE_LOCAL_VAULT_AI =
   "local-vault-ai-view";
@@ -104,6 +107,14 @@ export class LocalVaultAIView
     | (() => void)
     | null = null;
 
+  private failedIndexesButton:
+    | HTMLButtonElement
+    | null = null;
+
+  private unsubscribeIndexFailures:
+    | (() => void)
+    | null = null;
+
   private readonly sourceNavigator:
     SourceNavigator;
 
@@ -144,6 +155,17 @@ export class LocalVaultAIView
               status,
             ),
         );
+
+    this.unsubscribeIndexFailures =
+      this.localPlugin
+        .indexFailureStore
+        .onChange(
+          () => {
+            this.refreshFailedIndexesButton();
+          },
+        );
+
+    this.refreshFailedIndexesButton();
   }
 
   async onClose():
@@ -154,6 +176,10 @@ export class LocalVaultAIView
 
     this.unsubscribeStatus?.();
     this.unsubscribeStatus =
+      null;
+
+    this.unsubscribeIndexFailures?.();
+    this.unsubscribeIndexFailures =
       null;
   }
 
@@ -173,6 +199,34 @@ export class LocalVaultAIView
     Promise<void> {
     await this
       .renderConversation();
+  }
+
+  private refreshFailedIndexesButton():
+    void {
+    const button =
+      this.failedIndexesButton;
+
+    if (!button) {
+      return;
+    }
+
+    const failureCount =
+      this.localPlugin
+        .indexFailureStore
+        .count;
+
+    button.hidden =
+      failureCount === 0;
+
+    if (
+      failureCount === 0
+    ) {
+      return;
+    }
+
+    button.setText(
+      `Failed indexes (${failureCount})`,
+    );
   }
 
   private async renderShell():
@@ -280,6 +334,30 @@ export class LocalVaultAIView
         await this
           .renderConversation();
       };
+
+    this.failedIndexesButton =
+      toolbar.createEl(
+        "button",
+        {
+          text:
+            "Failed indexes",
+
+          cls:
+            "local-vault-ai-failed-indexes-button",
+        },
+      );
+
+    this.failedIndexesButton
+      .onclick =
+      () => {
+        new IndexFailuresModal(
+          this.app,
+          this.localPlugin
+            .indexFailureStore,
+        ).open();
+      };
+
+    this.refreshFailedIndexesButton();
 
     this.statusEl =
       container.createDiv({

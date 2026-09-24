@@ -247,3 +247,74 @@
   user-select: text;
   -webkit-user-select: text;
 }
+
+
+/* ---------------------------------------------------------
+ * Failed index sources
+ * --------------------------------------------------------- */
+
+.local-vault-ai-failed-indexes-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.local-vault-ai-failed-indexes-button[hidden] {
+  display: none !important;
+}
+
+.local-vault-ai-index-failures-description {
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.local-vault-ai-index-failure-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.local-vault-ai-index-failure-item {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: 12px;
+  background: var(--background-secondary);
+}
+
+.local-vault-ai-index-failure-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.local-vault-ai-index-failure-path {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+  margin-bottom: 10px;
+}
+
+.local-vault-ai-index-failure-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.local-vault-ai-index-failure-error pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 6px 0 0;
+}
+
+.local-vault-ai-index-failure-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}

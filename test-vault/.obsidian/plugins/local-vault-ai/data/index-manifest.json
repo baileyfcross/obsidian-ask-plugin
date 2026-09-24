@@ -3,8 +3,16 @@
   "embeddingProvider": "local",
   "embeddingIdentity": "local:onnxruntime-web:Xenova/all-MiniLM-L6-v2:model_quantized:max256:attention-mask-mean-pooling:l2-normalized:v1",
   "embeddingDimensions": 384,
-  "lastIndexedAt": "2026-09-23T04:15:54.185Z",
+  "lastIndexedAt": "2026-09-23T06:59:55.843Z",
   "documents": {
+    "algebraessentials.pdf.md": {
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime": 1790136950148,
+      "chunkIds": [],
+      "sourceType": "markdown",
+      "fileName": "algebraessentials.pdf.md",
+      "title": "algebraessentials.pdf"
+    },
     "6 - Full Notes/C# Variable Declaration.md": {
       "hash": "0b8461bf8e89a5572a2d67cc1fe6fd1f8f00da4303e5385dd4c4f4eb93d3184f",
       "mtime": 1788918549249,
@@ -16,18 +24,6 @@
       "sourceType": "markdown",
       "fileName": "C# Variable Declaration.md",
       "title": "C# Variable Declaration"
-    },
-    "6 - Full Notes/C# Tuple Returns and Deconstruction.md": {
-      "hash": "1fed514ae47c7ee7a814af60b11eae229651cff5a92d91471e498aa7cdf8a111",
-      "mtime": 1788918546714,
-      "chunkIds": [
-        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::0",
-        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::1",
-        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Tuple Returns and Deconstruction.md",
-      "title": "C# Tuple Returns and Deconstruction"
     },
     "6 - Full Notes/C# Unary and Binary Operators.md": {
       "hash": "4aed38334764fcde7113acbbcc085e59072e04d0037216ac3ca3720f82a8285f",
@@ -52,6 +48,18 @@
       "sourceType": "markdown",
       "fileName": "C# Type Inference.md",
       "title": "C# Type Inference"
+    },
+    "6 - Full Notes/C# Tuple Returns and Deconstruction.md": {
+      "hash": "1fed514ae47c7ee7a814af60b11eae229651cff5a92d91471e498aa7cdf8a111",
+      "mtime": 1788918546714,
+      "chunkIds": [
+        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::0",
+        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::1",
+        "6 - Full Notes/C# Tuple Returns and Deconstruction.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Tuple Returns and Deconstruction.md",
+      "title": "C# Tuple Returns and Deconstruction"
     },
     "6 - Full Notes/C# Structs and Value Types.md": {
       "hash": "3f21f69e90dcba518d1461d27f653f870ef85514e21864cf4e301f7c0d375d2c",
@@ -137,18 +145,6 @@
       "fileName": "C# Properties and Indexers.md",
       "title": "C# Properties and Indexers"
     },
-    "6 - Full Notes/C# Polymorphism and Overrides.md": {
-      "hash": "70f8b660d37fe8969de50060474f777a3509abf67f689577aba9f16233622b73",
-      "mtime": 1788918536588,
-      "chunkIds": [
-        "6 - Full Notes/C# Polymorphism and Overrides.md::0",
-        "6 - Full Notes/C# Polymorphism and Overrides.md::1",
-        "6 - Full Notes/C# Polymorphism and Overrides.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Polymorphism and Overrides.md",
-      "title": "C# Polymorphism and Overrides"
-    },
     "6 - Full Notes/C# Preprocessor Directive.md": {
       "hash": "2b6203518f1462025831abae16114a343be14de29985f9b0f1b83e7308dc57e3",
       "mtime": 1788918539124,
@@ -160,6 +156,18 @@
       "sourceType": "markdown",
       "fileName": "C# Preprocessor Directive.md",
       "title": "C# Preprocessor Directive"
+    },
+    "6 - Full Notes/C# Polymorphism and Overrides.md": {
+      "hash": "70f8b660d37fe8969de50060474f777a3509abf67f689577aba9f16233622b73",
+      "mtime": 1788918536588,
+      "chunkIds": [
+        "6 - Full Notes/C# Polymorphism and Overrides.md::0",
+        "6 - Full Notes/C# Polymorphism and Overrides.md::1",
+        "6 - Full Notes/C# Polymorphism and Overrides.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Polymorphism and Overrides.md",
+      "title": "C# Polymorphism and Overrides"
     },
     "6 - Full Notes/C# Pattern Matching.md": {
       "hash": "b59bc24ee1339f8c142f71b61f18c202d9219cec2bc7327decd7e8860b64f1da",
@@ -209,18 +217,6 @@
       "fileName": "C# Numeric Types.md",
       "title": "C# Numeric Types"
     },
-    "6 - Full Notes/C# Method Overloading.md": {
-      "hash": "71c97303c89c46231ca4ecebb43c386fc225cddfd71305c51dbd8806307be3a1",
-      "mtime": 1788918530269,
-      "chunkIds": [
-        "6 - Full Notes/C# Method Overloading.md::0",
-        "6 - Full Notes/C# Method Overloading.md::1",
-        "6 - Full Notes/C# Method Overloading.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Method Overloading.md",
-      "title": "C# Method Overloading"
-    },
     "6 - Full Notes/C# Language Version.md": {
       "hash": "db2555dcdf5c084cd8b5038cc48bf48c00df3991503a9b9b69766f1b4eb17c6e",
       "mtime": 1788918540383,
@@ -233,17 +229,17 @@
       "fileName": "C# Language Version.md",
       "title": "C# Language Version"
     },
-    "6 - Full Notes/C# Iteration Statements.md": {
-      "hash": "0a33af5fbd0422211f0a131322423683e6b85712efb1263b73f67be1d2e0a5a2",
-      "mtime": 1788918532790,
+    "6 - Full Notes/C# Method Overloading.md": {
+      "hash": "71c97303c89c46231ca4ecebb43c386fc225cddfd71305c51dbd8806307be3a1",
+      "mtime": 1788918530269,
       "chunkIds": [
-        "6 - Full Notes/C# Iteration Statements.md::0",
-        "6 - Full Notes/C# Iteration Statements.md::1",
-        "6 - Full Notes/C# Iteration Statements.md::2"
+        "6 - Full Notes/C# Method Overloading.md::0",
+        "6 - Full Notes/C# Method Overloading.md::1",
+        "6 - Full Notes/C# Method Overloading.md::2"
       ],
       "sourceType": "markdown",
-      "fileName": "C# Iteration Statements.md",
-      "title": "C# Iteration Statements"
+      "fileName": "C# Method Overloading.md",
+      "title": "C# Method Overloading"
     },
     "6 - Full Notes/C# Interface Implementation.md": {
       "hash": "cdce5d47d648e8f784a2741db93ad3558ec33fb99e3e4f28790310902bbf6836",
@@ -257,6 +253,18 @@
       "fileName": "C# Interface Implementation.md",
       "title": "C# Interface Implementation"
     },
+    "6 - Full Notes/C# Iteration Statements.md": {
+      "hash": "0a33af5fbd0422211f0a131322423683e6b85712efb1263b73f67be1d2e0a5a2",
+      "mtime": 1788918532790,
+      "chunkIds": [
+        "6 - Full Notes/C# Iteration Statements.md::0",
+        "6 - Full Notes/C# Iteration Statements.md::1",
+        "6 - Full Notes/C# Iteration Statements.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Iteration Statements.md",
+      "title": "C# Iteration Statements"
+    },
     "6 - Full Notes/C# If Statements.md": {
       "hash": "151aae4e55dc55709bb360f22448313bb2dd7c4ab5e98c1aa5c0b7bc176b0f62",
       "mtime": 1788918521431,
@@ -269,18 +277,6 @@
       "fileName": "C# If Statements.md",
       "title": "C# If Statements"
     },
-    "6 - Full Notes/C# Grammar and Vocabulary.md": {
-      "hash": "1ccb7d5678ca14581159c513eb3ddba9731b87d226054b3ad4b1d1dcd4e8cf57",
-      "mtime": 1788918522713,
-      "chunkIds": [
-        "6 - Full Notes/C# Grammar and Vocabulary.md::0",
-        "6 - Full Notes/C# Grammar and Vocabulary.md::1",
-        "6 - Full Notes/C# Grammar and Vocabulary.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Grammar and Vocabulary.md",
-      "title": "C# Grammar and Vocabulary"
-    },
     "6 - Full Notes/C# Function Parameters.md": {
       "hash": "dca90abe50fe57d386a4f79d80c3fa58713daffc7fd41e4b8de6bd5979d7b128",
       "mtime": 1788918523979,
@@ -292,6 +288,18 @@
       "sourceType": "markdown",
       "fileName": "C# Function Parameters.md",
       "title": "C# Function Parameters"
+    },
+    "6 - Full Notes/C# Grammar and Vocabulary.md": {
+      "hash": "1ccb7d5678ca14581159c513eb3ddba9731b87d226054b3ad4b1d1dcd4e8cf57",
+      "mtime": 1788918522713,
+      "chunkIds": [
+        "6 - Full Notes/C# Grammar and Vocabulary.md::0",
+        "6 - Full Notes/C# Grammar and Vocabulary.md::1",
+        "6 - Full Notes/C# Grammar and Vocabulary.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Grammar and Vocabulary.md",
+      "title": "C# Grammar and Vocabulary"
     },
     "6 - Full Notes/C# Fields and Access Modifiers.md": {
       "hash": "5f61d6ae3b8967fb1881dcd264247d0b320fa371dfc1035a5b7e0a5a27f40232",
@@ -377,18 +385,6 @@
       "fileName": "C# Classes and Objects.md",
       "title": "C# Classes and Objects"
     },
-    "6 - Full Notes/C# Casting and Conversion.md": {
-      "hash": "7d53d3ec858e236d36a72385ec7a6aefe6ea6d620f2197ee25f0534095ca2228",
-      "mtime": 1788918510054,
-      "chunkIds": [
-        "6 - Full Notes/C# Casting and Conversion.md::0",
-        "6 - Full Notes/C# Casting and Conversion.md::1",
-        "6 - Full Notes/C# Casting and Conversion.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "C# Casting and Conversion.md",
-      "title": "C# Casting and Conversion"
-    },
     "6 - Full Notes/C# Class Libraries.md": {
       "hash": "c1e366884d53eccf5b4b69ef2c1310966af3b357851f8b87c42e368dda6625ef",
       "mtime": 1788918513893,
@@ -412,6 +408,18 @@
       "sourceType": "markdown",
       "fileName": "C# Checked Arithmetic.md",
       "title": "C# Checked Arithmetic"
+    },
+    "6 - Full Notes/C# Casting and Conversion.md": {
+      "hash": "7d53d3ec858e236d36a72385ec7a6aefe6ea6d620f2197ee25f0534095ca2228",
+      "mtime": 1788918510054,
+      "chunkIds": [
+        "6 - Full Notes/C# Casting and Conversion.md::0",
+        "6 - Full Notes/C# Casting and Conversion.md::1",
+        "6 - Full Notes/C# Casting and Conversion.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "C# Casting and Conversion.md",
+      "title": "C# Casting and Conversion"
     },
     "6 - Full Notes/C# Boolean Type.md": {
       "hash": "15f05dbb7c7f3236209399a75e295a9ed5d8fa3994d3777f1dde2474e2e56090",
@@ -461,6 +469,18 @@
       "fileName": "C# Assignment and Logical Operators.md",
       "title": "C# Assignment and Logical Operators"
     },
+    "6 - Full Notes/Algebraic Word Problem.md": {
+      "hash": "53a48a7d03ba4adf2758021a3e0189c8ea803449598c7c8470424d35d595ac8d",
+      "mtime": 1788666735774,
+      "chunkIds": [
+        "6 - Full Notes/Algebraic Word Problem.md::0",
+        "6 - Full Notes/Algebraic Word Problem.md::1",
+        "6 - Full Notes/Algebraic Word Problem.md::2"
+      ],
+      "sourceType": "markdown",
+      "fileName": "Algebraic Word Problem.md",
+      "title": "Algebraic Word Problem"
+    },
     "6 - Full Notes/Algorithm Output.md": {
       "hash": "72f6cb164c43cdf60fd866697390dc9d18dd2d9c8228b030705801da47bdc391",
       "mtime": 1788668178175,
@@ -496,18 +516,6 @@
       "sourceType": "markdown",
       "fileName": "Algorithm Effectiveness.md",
       "title": "Algorithm Effectiveness"
-    },
-    "6 - Full Notes/Algebraic Word Problem.md": {
-      "hash": "53a48a7d03ba4adf2758021a3e0189c8ea803449598c7c8470424d35d595ac8d",
-      "mtime": 1788666735774,
-      "chunkIds": [
-        "6 - Full Notes/Algebraic Word Problem.md::0",
-        "6 - Full Notes/Algebraic Word Problem.md::1",
-        "6 - Full Notes/Algebraic Word Problem.md::2"
-      ],
-      "sourceType": "markdown",
-      "fileName": "Algebraic Word Problem.md",
-      "title": "Algebraic Word Problem"
     },
     "6 - Full Notes/Algebraic Term.md": {
       "hash": "079c07a7c3db72b4789735ce9a16b99623a92faa4d44c9f1d62944b0b4e6f5ba",
@@ -1724,14 +1732,7 @@
       "fileName": "css_thedefinitiveguide.pdf",
       "title": "CSS: The Definitive Guide",
       "pageCount": 1091
-    },
-    "algebraessentials.pdf.md": {
-      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "mtime": 1790136950148,
-      "chunkIds": [],
-      "sourceType": "markdown",
-      "fileName": "algebraessentials.pdf.md",
-      "title": "algebraessentials.pdf"
     }
-  }
+  },
+  "indexPdfSources": true
 }

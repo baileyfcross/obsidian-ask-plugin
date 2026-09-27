@@ -1,12 +1,16 @@
 import {
   App,
   Modal,
+  Notice,
   TFile,
 } from "obsidian";
 import type {
   IndexFailureRecord,
   IndexFailureStore,
 } from "../indexing/IndexFailureStore";
+import type {
+  IndexManager,
+} from "../indexing/IndexManager";
 
 export class IndexFailuresModal
   extends Modal {
@@ -14,10 +18,15 @@ export class IndexFailuresModal
     | (() => void)
     | null = null;
 
+  private readonly retryingPaths =
+    new Set<string>();
+
   constructor(
     app: App,
     private readonly failureStore:
       IndexFailureStore,
+    private readonly indexManager:
+      IndexManager,
   ) {
     super(app);
   }
@@ -204,6 +213,31 @@ export class IndexFailuresModal
             "local-vault-ai-index-failure-actions",
         });
 
+      const retrying =
+        this.retryingPaths
+          .has(failure.path);
+
+      const retryButton =
+        actions.createEl(
+          "button",
+          {
+            text:
+              retrying
+                ? "Retrying..."
+                : "Retry index",
+          },
+        );
+
+      retryButton.disabled =
+        retrying;
+
+      retryButton.onclick =
+        () => {
+          void this.retryFailure(
+            failure.path,
+          );
+        };
+
       const openButton =
         actions.createEl(
           "button",
@@ -222,6 +256,49 @@ export class IndexFailuresModal
               source,
             );
         };
+    }
+  }
+
+  private async retryFailure(
+    path: string,
+  ): Promise<void> {
+    if (
+      this.retryingPaths
+        .has(path)
+    ) {
+      return;
+    }
+
+    this.retryingPaths
+      .add(path);
+    this.render();
+
+    try {
+      const result =
+        await this.indexManager
+          .retryFailedIndex(
+            path,
+          );
+
+      new Notice(
+        result.message,
+      );
+    } catch (error) {
+      new Notice(
+        error instanceof Error
+          ? `Retry failed: ${error.message}`
+          : "Retry failed for the selected source.",
+      );
+    } finally {
+      this.retryingPaths
+        .delete(path);
+
+      /*
+       * A successful retry clears the failure record and therefore removes
+       * the card. A failed retry keeps the card and refreshes its timestamp
+       * and error details through the failure-store subscription.
+       */
+      this.render();
     }
   }
 

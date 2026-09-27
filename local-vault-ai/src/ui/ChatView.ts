@@ -354,6 +354,8 @@ export class LocalVaultAIView
           this.app,
           this.localPlugin
             .indexFailureStore,
+          this.localPlugin
+            .indexManager,
         ).open();
       };
 

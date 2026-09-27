@@ -67,6 +67,17 @@ import {
   PortableIndexStore,
 } from "./PortableIndexStore";
 
+export interface RetryFailedIndexResult {
+  status:
+    | "success"
+    | "failed"
+    | "busy"
+    | "missing"
+    | "not-indexable";
+
+  message: string;
+}
+
 const PERSIST_DEBOUNCE_MS =
   2200;
 
@@ -316,6 +327,15 @@ export class IndexManager {
       string,
       number
     >();
+
+  /*
+   * Prevent the same failed source from being retried twice at the same
+   * time from the Failed indexes modal. A retry still uses the normal
+   * single-file indexing path so persistence, portable-cache updates, and
+   * failure clearing behave exactly like any other incremental update.
+   */
+  private readonly retryingFailedPaths =
+    new Set<string>();
 
   /*
    * Orama mutations and persistence remain
@@ -1558,6 +1578,113 @@ if (
       if (lease) {
         await lease.release();
       }
+    }
+  }
+
+  async retryFailedIndex(
+    path: string,
+  ): Promise<RetryFailedIndexResult> {
+    if (
+      this.retryingFailedPaths
+        .size > 0
+    ) {
+      return {
+        status: "busy",
+        message:
+          this.retryingFailedPaths
+            .has(path)
+            ? `${path} is already being retried.`
+            : "Another failed source is already being retried. Wait for it to finish before starting another retry.",
+      };
+    }
+
+    if (
+      this.status.state !==
+      "ready"
+    ) {
+      return {
+        status: "busy",
+        message:
+          this.status.state ===
+          "indexing"
+            ? "Wait for the current index operation to finish before retrying a failed source."
+            : `The index is currently ${this.status.state}. ${this.status.message}`,
+      };
+    }
+
+    const source =
+      this.app.vault
+        .getAbstractFileByPath(
+          path,
+        );
+
+    if (
+      !(source instanceof TFile)
+    ) {
+      /*
+       * The source was deleted or moved after the failure was recorded.
+       * It can no longer be retried, so remove the stale failure record.
+       */
+      await this.indexFailureStore
+        .clear(path);
+
+      return {
+        status: "missing",
+        message:
+          `${path} no longer exists in the vault, so its stale failure record was removed.`,
+      };
+    }
+
+    if (
+      !this.isIndexableFile(
+        source,
+      )
+    ) {
+      return {
+        status: "not-indexable",
+        message:
+          `${path} is not currently eligible for indexing with the active source settings.`,
+      };
+    }
+
+    this.retryingFailedPaths
+      .add(path);
+
+    try {
+      await this.indexFile(
+        source,
+      );
+
+      if (
+        !this.indexFailureStore
+          .has(path)
+      ) {
+        return {
+          status: "success",
+          message:
+            `${path} indexed successfully.`,
+        };
+      }
+
+      return {
+        status: "failed",
+        message:
+          `${path} failed again and remains in Failed indexes.`,
+      };
+    } catch (error) {
+      /*
+       * indexFile normally isolates per-source failures itself. Keep this
+       * guard so an unexpected retry-only exception cannot escape the modal
+       * event handler or interrupt the rest of the plugin.
+       */
+      return {
+        status: "failed",
+        message:
+          `Retry failed for ${path}: ${this.errorText(error)}`,
+      };
+    } finally {
+      this.retryingFailedPaths
+        .delete(path);
     }
   }
 

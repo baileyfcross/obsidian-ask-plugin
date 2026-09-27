@@ -1,6 +1,8 @@
 import {
   create,
+  getByID,
   insert,
+  insertMultiple,
   load as loadOrama,
   remove,
   save as saveOrama,
@@ -20,6 +22,9 @@ import {
   scoreSourceCandidate,
   SourceCandidateDescriptor,
 } from "../retrieval/SourceResolver";
+import {
+  sha256,
+} from "../indexing/Hash";
 
 export interface HybridSearchOptions {
   limit: number;
@@ -66,11 +71,17 @@ const SOURCE_SUGGESTION_THRESHOLD =
  * monolithic JSON.stringify(raw) call. The small knowledge-index.json
  * file becomes a manifest that points at those shards.
  */
-const SHARDED_INDEX_FORMAT =
+const LEGACY_SHARDED_INDEX_FORMAT =
   "local-vault-ai-orama-sharded-v1";
 
-const SHARDED_INDEX_VERSION =
+const LEGACY_SHARDED_INDEX_VERSION =
   1;
+
+const SHARDED_INDEX_FORMAT =
+  "local-vault-ai-orama-sharded-v2";
+
+const SHARDED_INDEX_VERSION =
+  2;
 
 const SHARD_TARGET_CHARACTERS =
   8 * 1024 * 1024;
@@ -147,6 +158,8 @@ export class KnowledgeIndex {
     any | null = null;
 
   private dimensions = 0;
+
+  private dirty = false;
 
   constructor(
     private readonly adapter:
@@ -241,6 +254,8 @@ export class KnowledgeIndex {
           `vector[${dimensions}]`,
       },
     } as any);
+
+    this.dirty = true;
   }
 
   async load(
@@ -290,6 +305,8 @@ export class KnowledgeIndex {
         raw as Parameters<typeof loadOrama>[1],
       );
 
+      this.dirty = false;
+
       return;
     }
 
@@ -305,10 +322,21 @@ export class KnowledgeIndex {
       this.db,
       parsed,
     );
+
+    this.dirty = false;
   }
 
   async save(): Promise<void> {
     this.assertReady();
+
+    if (
+      !this.dirty &&
+      await this.adapter.exists(
+        this.indexPath,
+      )
+    ) {
+      return;
+    }
 
     const raw =
       await saveOrama(
@@ -340,6 +368,15 @@ export class KnowledgeIndex {
         context,
       );
 
+    const snapshotIdentity =
+      await sha256(
+        JSON.stringify({
+          dimensions:
+            this.dimensions,
+          root,
+        }),
+      );
+
     const manifest:
       ShardedIndexManifest = {
         format:
@@ -350,33 +387,72 @@ export class KnowledgeIndex {
           this.dimensions,
         createdAt:
           Date.now(),
-        generation,
+        generation:
+          snapshotIdentity,
         shardFiles:
           context.shardFiles,
         root,
       };
 
-    /*
-     * This JSON stays small. All large Orama structures are already
-     * stored in the shard files, so this stringify cannot approach
-     * V8's giant-string ceiling.
-     */
-    await this.adapter.write(
-      this.indexPath,
-      JSON.stringify(
-        manifest,
-      ),
-    );
+    let existingGeneration:
+      string | null = null;
+
+    try {
+      if (
+        await this.adapter.exists(
+          this.indexPath,
+        )
+      ) {
+        const existingSerialized =
+          await this.adapter.read(
+            this.indexPath,
+          );
+
+        const existingParsed =
+          JSON.parse(
+            existingSerialized,
+          );
+
+        if (
+          isShardedIndexManifest(
+            existingParsed,
+          )
+        ) {
+          existingGeneration =
+            existingParsed.generation;
+        }
+      }
+    } catch {
+      /*
+       * A stale/corrupt runtime manifest should not prevent writing the
+       * freshly serialized snapshot.
+       */
+    }
 
     /*
-     * The new manifest is durable now. Old/orphaned generations can
-     * be removed without risking the newly saved snapshot.
+     * Content-addressed shards keep their filenames forever. If the
+     * Orama snapshot is byte-for-byte identical, do not rewrite the small
+     * manifest either. Git therefore sees no index change at all.
      */
+    if (
+      existingGeneration !==
+      snapshotIdentity
+    ) {
+      await this.adapter.write(
+        this.indexPath,
+        JSON.stringify(
+          manifest,
+        ),
+      );
+    }
+
     await this.cleanupOldShards(
       new Set(
         context.shardFiles,
       ),
     );
+
+    this.dirty = false;
   }
 
   private async writeShardedNode(
@@ -729,40 +805,46 @@ export class KnowledgeIndex {
     serialized: string,
     context: ShardWriteContext,
   ): Promise<string> {
-    const part =
-      String(
-        context.nextPart,
-      ).padStart(
-        6,
-        "0",
+    const hash =
+      await sha256(
+        serialized,
       );
 
-    context.nextPart +=
-      1;
-
     const file =
-      `${context.shardDirectory}/${context.generation}-${part}.json`;
-
-    await this.adapter.write(
-      file,
-      serialized,
-    );
-
-    context.shardFiles.push(
-      file,
-    );
-
-    context.writesSinceYield +=
-      1;
+      `${context.shardDirectory}/${hash}.json`;
 
     if (
-      context.writesSinceYield >=
-      SHARD_IO_YIELD_INTERVAL
+      !(await this.adapter.exists(
+        file,
+      ))
     ) {
-      context.writesSinceYield =
-        0;
+      await this.adapter.write(
+        file,
+        serialized,
+      );
 
-      await yieldPersistenceUi();
+      context.writesSinceYield +=
+        1;
+
+      if (
+        context.writesSinceYield >=
+        SHARD_IO_YIELD_INTERVAL
+      ) {
+        context.writesSinceYield =
+          0;
+
+        await yieldPersistenceUi();
+      }
+    }
+
+    if (
+      !context.shardFiles.includes(
+        file,
+      )
+    ) {
+      context.shardFiles.push(
+        file,
+      );
     }
 
     return file;
@@ -1039,6 +1121,113 @@ export class KnowledgeIndex {
       this.db,
       chunk as any,
     );
+
+    this.dirty = true;
+  }
+
+  async addMany(
+    chunks: VaultChunk[],
+  ): Promise<void> {
+    this.assertReady();
+
+    if (chunks.length === 0) {
+      return;
+    }
+
+    /*
+     * Rebuild recovery can occasionally encounter a runtime Orama snapshot
+     * that contains a chunk whose manifest entry was not durably committed
+     * (for example, if a previous save was interrupted between the index
+     * snapshot and manifest writes). Treat chunk insertion as idempotent:
+     * normally this is still one fast insertMultiple call, but if Orama
+     * reports an existing id we remove every id in the attempted batch and
+     * retry it once. This also clears any partial inserts made by the failed
+     * insertMultiple call before retrying.
+     */
+    try {
+      await insertMultiple(
+        this.db,
+        chunks as any[],
+      );
+    } catch (error) {
+      if (
+        !isDuplicateDocumentError(
+          error,
+        )
+      ) {
+        throw error;
+      }
+
+      for (const chunk of chunks) {
+        try {
+          await remove(
+            this.db,
+            chunk.id,
+          );
+        } catch {
+          /*
+           * Missing ids are expected here because the failed batch may
+           * contain a mix of old and newly inserted documents.
+           */
+        }
+      }
+
+      await insertMultiple(
+        this.db,
+        chunks as any[],
+      );
+    }
+
+    this.dirty = true;
+  }
+
+  async getMany(
+    ids: string[],
+  ): Promise<VaultChunk[]> {
+    this.assertReady();
+
+    const chunks:
+      VaultChunk[] = [];
+
+    for (
+      let offset = 0;
+      offset < ids.length;
+      offset += 128
+    ) {
+      const batch =
+        ids.slice(
+          offset,
+          offset + 128,
+        );
+
+      const documents =
+        await Promise.all(
+          batch.map(
+            async (id) =>
+              getByID(
+                this.db,
+                id,
+              ),
+          ),
+        );
+
+      for (const document of documents) {
+        if (document) {
+          chunks.push(
+            document as unknown as VaultChunk,
+          );
+        }
+      }
+
+      if (
+        offset + 128 <
+        ids.length
+      ) {
+        await yieldPersistenceUi();
+      }
+    }
+
+    return chunks;
   }
 
   async remove(
@@ -1051,6 +1240,8 @@ export class KnowledgeIndex {
         this.db,
         id,
       );
+
+      this.dirty = true;
     } catch {
       /*
        * A stale manifest should not
@@ -1753,11 +1944,22 @@ function isShardedIndexManifest(
     return false;
   }
 
+  const knownFormat =
+    (
+      value.format ===
+        SHARDED_INDEX_FORMAT &&
+      value.version ===
+        SHARDED_INDEX_VERSION
+    ) ||
+    (
+      value.format ===
+        LEGACY_SHARDED_INDEX_FORMAT &&
+      value.version ===
+        LEGACY_SHARDED_INDEX_VERSION
+    );
+
   return (
-    value.format ===
-      SHARDED_INDEX_FORMAT &&
-    value.version ===
-      SHARDED_INDEX_VERSION &&
+    knownFormat &&
     typeof value.dimensions ===
       "number" &&
     typeof value.generation ===
@@ -1984,4 +2186,25 @@ function toSourceType(
   return value === "pdf"
     ? "pdf"
     : "markdown";
+}
+
+function isDuplicateDocumentError(
+  error: unknown,
+): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  const normalized =
+    message.toLowerCase();
+
+  return (
+    normalized.includes(
+      "already exists",
+    ) &&
+    normalized.includes(
+      "document",
+    )
+  );
 }

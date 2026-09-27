@@ -63,6 +63,9 @@ import {
 import {
   IndexFailureStore,
 } from "./IndexFailureStore";
+import {
+  PortableIndexStore,
+} from "./PortableIndexStore";
 
 const PERSIST_DEBOUNCE_MS =
   2200;
@@ -88,12 +91,12 @@ const REBUILD_STATUS_MIN_INTERVAL_MS =
   1000;
 
 /*
- * Orama insert() can resolve through a long chain of microtasks.
- * Yield periodically so Electron has a chance to composite and paint
- * while a large PDF is being committed.
+ * Insert committed chunks in bounded batches. This is much faster when a
+ * portable source cache restores thousands of existing chunks, while the
+ * yield between batches still gives Electron regular paint opportunities.
  */
-const COMMIT_YIELD_EVERY_CHUNKS =
-  16;
+const COMMIT_INSERT_BATCH_SIZE =
+  64;
 
 const NO_SECTION_KEY =
   "__none__";
@@ -173,6 +176,17 @@ interface PreparedDocument {
   fileHash: string;
   source: SourceInfo;
   chunks: EmbeddedChunk[];
+
+  /*
+   * When present, the expensive extract/chunk/embed stages were skipped and
+   * these already-embedded chunks came from the portable content-addressed
+   * source cache.
+   */
+  cachedVaultChunks?:
+    VaultChunk[];
+
+  reusedFromPortable?:
+    boolean;
 }
 
 interface RebuildCheckpointState {
@@ -225,6 +239,12 @@ interface RebuildProgress {
 
   failedSources:
     number;
+
+  reusedSources:
+    number;
+
+  reusedChunks:
+    number;
 }
 
 export class IndexManager {
@@ -249,6 +269,9 @@ export class IndexManager {
 
   private readonly indexFailureStore:
     IndexFailureStore;
+
+  private readonly portableIndex:
+    PortableIndexStore;
 
   private readonly manifestPath:
     string;
@@ -401,6 +424,20 @@ export class IndexManager {
           )
         : "";
 
+    const dataDirectory =
+      manifestSlash >= 0
+        ? manifestPath.slice(
+            0,
+            manifestSlash,
+          )
+        : "";
+
+    this.portableIndex =
+      new PortableIndexStore(
+        this.app.vault.adapter,
+        dataDirectory,
+      );
+
     this.rebuildCheckpointPath =
       `${manifestDirectory}index-rebuild-state.json`;
 
@@ -416,6 +453,9 @@ export class IndexManager {
   async initialize():
     Promise<void> {
     try {
+      await this.portableIndex
+        .initialize();
+
       this.manifest =
         await this.fileSystem
           .run(
@@ -432,7 +472,10 @@ export class IndexManager {
       if (!this.manifest) {
         this.setStatus(
           "needs-rebuild",
-          "No knowledge index exists yet. Rebuild the index.",
+          this.portableIndex
+            .hasManifest()
+            ? "The runtime knowledge index is not present. Rebuild the index to restore compatible sources from the portable index cache without re-embedding them."
+            : "No knowledge index exists yet. Rebuild the index.",
         );
 
         return;
@@ -503,7 +546,10 @@ if (
       ) {
         this.setStatus(
           "needs-rebuild",
-          "The index manifest exists, but the search index is missing. Rebuild the index.",
+          this.portableIndex
+            .hasManifest()
+            ? "The runtime search index is missing. Rebuild the index to reconstruct it from compatible portable source objects without re-running PDF extraction or embeddings."
+            : "The index manifest exists, but the search index is missing. Rebuild the index.",
         );
 
         return;
@@ -520,6 +566,33 @@ if (
                   .embeddingDimensions,
               ),
         );
+
+      try {
+        await this.portableIndex
+          .prepareProfile(
+            activeEmbedding,
+            this.manifest
+              .embeddingDimensions,
+            INDEX_VERSION,
+            this.manifestPdfSetting(),
+          );
+
+        await this
+          .migrateCurrentIndexToPortableCache(
+            activeEmbedding,
+            this.manifest
+              .embeddingDimensions,
+          );
+      } catch (error) {
+        /*
+         * The runtime index remains usable even if the optional portable
+         * cache could not be migrated. A later persist/rebuild will retry.
+         */
+        console.warn(
+          "[Local Vault AI] Could not finish portable-index migration.",
+          error,
+        );
+      }
 
       const interruptedRebuild =
         await this.loadRebuildCheckpoint();
@@ -684,6 +757,9 @@ if (
       await this.indexFailureStore
         .pruneMissingSources();
 
+      await this.portableIndex
+        .initialize();
+
       const embeddingDescriptor =
         this.embeddings
           .getDescriptor();
@@ -702,6 +778,21 @@ if (
       const dimensions =
         await this.embeddings
           .embeddingDimension();
+
+      await this.portableIndex
+        .prepareProfile(
+          embeddingDescriptor,
+          dimensions,
+          INDEX_VERSION,
+          this.settings
+            .indexPdfSources,
+        );
+
+      await this
+        .migrateCurrentIndexToPortableCache(
+          embeddingDescriptor,
+          dimensions,
+        );
 
       const previousCheckpoint =
         await this.loadRebuildCheckpoint();
@@ -754,6 +845,16 @@ if (
                 file,
               ),
           );
+
+      this.portableIndex
+        .retainSources(
+          new Set(
+            allFiles.map(
+              (file) =>
+                file.path,
+            ),
+          ),
+        );
 
       const files =
         canResume
@@ -837,6 +938,12 @@ if (
 
         failedSources:
           0,
+
+        reusedSources:
+          0,
+
+        reusedChunks:
+          0,
       };
 
       this.activeRebuildProgress =
@@ -913,15 +1020,21 @@ if (
              * source workers from mutating Orama or
              * the manifest simultaneously.
              */
+            const committedChunks =
+              await this
+                .commitSemaphore
+                .run(
+                  async () =>
+                    this
+                      .commitPreparedDocument(
+                        prepared,
+                      ),
+                );
+
             await this
-              .commitSemaphore
-              .run(
-                async () => {
-                  await this
-                    .commitPreparedDocument(
-                      prepared,
-                    );
-                },
+              .cachePreparedDocument(
+                prepared,
+                committedChunks,
               );
 
             await this
@@ -1030,6 +1143,33 @@ if (
         `Saving final knowledge index · ${progress.completedSources}/${progress.totalSources} sources processed...`,
       );
 
+      const finalSaveStartedAt =
+        Date.now();
+
+      await this.saveRebuildCheckpoint({
+        version: 1,
+        indexVersion:
+          INDEX_VERSION,
+        embeddingProvider:
+          embeddingDescriptor.provider,
+        embeddingIdentity:
+          embeddingDescriptor.identity,
+        embeddingDimensions:
+          dimensions,
+        indexPdfSources:
+          this.settings.indexPdfSources,
+        startedAt:
+          rebuildStartedAt,
+        lastCheckpointAt:
+          finalSaveStartedAt,
+        completedSources:
+          progress.completedSources,
+        totalSources:
+          progress.totalSources,
+        snapshotSaved:
+          false,
+      });
+
       await this.yieldToUi();
       await this.persistNow();
       await this.clearRebuildCheckpoint();
@@ -1046,18 +1186,25 @@ if (
           ? ` Skipped ${progress.failedSources} source(s) that failed to index. Open Failed indexes in the chat toolbar for details.`
           : "";
 
+      const reusedText =
+        progress.reusedSources >
+        0
+          ? ` Reused ${progress.reusedSources} source(s) / ${progress.reusedChunks} chunk(s) from the portable cache without PDF extraction or embedding.`
+          : "";
+
       this.setStatus(
         "ready",
         this.settings
           .indexPdfSources
           ? (
               `Indexed ${progress.markdownCompleted} Markdown file(s) and ` +
-              `${progress.pdfCompleted} PDF file(s).${skippedText}${failedText}`
+              `${progress.pdfCompleted} PDF file(s).${skippedText}${failedText}${reusedText}`
             )
           : (
               `Indexed ${progress.markdownCompleted} Markdown file(s). ` +
               "PDF/source indexing is disabled; this is a Markdown-only knowledge index." +
-              failedText
+              failedText +
+              reusedText
             ),
       );
     } catch (error) {
@@ -1320,15 +1467,21 @@ if (
         return;
       }
 
+      const committedChunks =
+        await this
+          .commitSemaphore
+          .run(
+            async () =>
+              this
+                .commitPreparedDocument(
+                  prepared,
+                ),
+          );
+
       await this
-        .commitSemaphore
-        .run(
-          async () => {
-            await this
-              .commitPreparedDocument(
-                prepared,
-              );
-          },
+        .cachePreparedDocument(
+          prepared,
+          committedChunks,
         );
 
       await this
@@ -1427,8 +1580,6 @@ if (
       this.knowledgeIndex
         .isReady()
     ) {
-      await this.persistNow();
-
       if (
         this.activeRebuildProgress &&
         this.activeRebuildStartedAt !==
@@ -1437,6 +1588,35 @@ if (
         const descriptor =
           this.embeddings
             .getDescriptor();
+
+        const flushStartedAt =
+          Date.now();
+
+        await this.saveRebuildCheckpoint({
+          version: 1,
+          indexVersion:
+            INDEX_VERSION,
+          embeddingProvider:
+            descriptor.provider,
+          embeddingIdentity:
+            descriptor.identity,
+          embeddingDimensions:
+            this.manifest.embeddingDimensions,
+          indexPdfSources:
+            this.settings.indexPdfSources,
+          startedAt:
+            this.activeRebuildStartedAt,
+          lastCheckpointAt:
+            flushStartedAt,
+          completedSources:
+            this.activeRebuildProgress.completedSources,
+          totalSources:
+            this.activeRebuildProgress.totalSources,
+          snapshotSaved:
+            false,
+        });
+
+        await this.persistNow();
 
         await this.saveRebuildCheckpoint({
           version: 1,
@@ -1461,6 +1641,8 @@ if (
           snapshotSaved:
             true,
         });
+      } else {
+        await this.persistNow();
       }
     }
   }
@@ -1541,6 +1723,267 @@ if (
       file.path,
       timer,
     );
+  }
+
+  private async migrateCurrentIndexToPortableCache(
+    embeddingDescriptor: {
+      provider: string;
+      identity: string;
+    },
+    dimensions: number,
+  ): Promise<void> {
+    if (
+      !this.manifest ||
+      !this.knowledgeIndex
+        .isReady()
+    ) {
+      return;
+    }
+
+    if (
+      this.manifest.version !==
+        INDEX_VERSION ||
+      this.manifest
+        .embeddingProvider !==
+        embeddingDescriptor.provider ||
+      this.manifest
+        .embeddingIdentity !==
+        embeddingDescriptor.identity ||
+      this.manifest
+        .embeddingDimensions !==
+        dimensions ||
+      this.manifestPdfSetting() !==
+        this.settings
+          .indexPdfSources
+    ) {
+      return;
+    }
+
+    const missing =
+      Object.entries(
+        this.manifest
+          .documents,
+      ).filter(
+        ([
+          sourcePath,
+          document,
+        ]) =>
+          !this.portableIndex
+            .hasSource(
+              sourcePath,
+              document.hash,
+            ),
+      );
+
+    if (missing.length === 0) {
+      return;
+    }
+
+    this.setTransientStatus(
+      "indexing",
+      `Preparing portable source cache · 0/${missing.length} source(s)...`,
+    );
+
+    let completed = 0;
+
+    for (
+      const [
+        sourcePath,
+        document,
+      ] of missing
+    ) {
+      const chunks =
+        await this
+          .knowledgeIndex
+          .getMany(
+            document.chunkIds,
+          );
+
+      if (
+        chunks.length !==
+        document.chunkIds
+          .length
+      ) {
+        console.warn(
+          `[Local Vault AI] Could not migrate ${sourcePath} into the portable cache because ${document.chunkIds.length - chunks.length} runtime chunk(s) were missing.`,
+        );
+
+        continue;
+      }
+
+      await this.portableIndex
+        .putSource(
+          sourcePath,
+          document.hash,
+          document.sourceType,
+          document.fileName,
+          document.title,
+          document.pageCount,
+          chunks,
+        );
+
+      completed += 1;
+
+      if (
+        completed % 10 ===
+          0 ||
+        completed ===
+          missing.length
+      ) {
+        this.setTransientStatus(
+          "indexing",
+          `Preparing portable source cache · ${completed}/${missing.length} source(s)...`,
+        );
+
+        await this.yieldToUi();
+      }
+    }
+
+    await this.portableIndex
+      .save();
+  }
+
+  private async tryPreparePortableDocument(
+    file: TFile,
+    fileHash: string,
+    progress:
+      RebuildProgress | null,
+  ): Promise<
+    PreparedDocument | null
+  > {
+    const cached =
+      await this.portableIndex
+        .loadSource(
+          file.path,
+          fileHash,
+        );
+
+    if (!cached) {
+      return null;
+    }
+
+    const expectedSourceType:
+      SourceType =
+      this.isPdfFile(file)
+        ? "pdf"
+        : "markdown";
+
+    if (
+      cached.sourceType !==
+      expectedSourceType
+    ) {
+      return null;
+    }
+
+    const cachedVaultChunks:
+      VaultChunk[] =
+      cached.chunks.map(
+        (chunk) => ({
+          ...chunk,
+          mtime:
+            file.stat.mtime,
+        }),
+      );
+
+    const firstChunk =
+      cachedVaultChunks[0];
+
+    const source:
+      SourceInfo = {
+      sourceType:
+        cached.sourceType,
+      title:
+        cached.title,
+      tags:
+        firstChunk?.tags ??
+        [],
+      links:
+        firstChunk?.links ??
+        [],
+      properties:
+        firstChunk
+          ?.properties ??
+        [],
+      pageCount:
+        cached.pageCount,
+    };
+
+    if (progress) {
+      progress.knownChunks +=
+        cachedVaultChunks.length;
+
+      progress.embeddedChunks +=
+        cachedVaultChunks.length;
+
+      progress.reusedSources +=
+        1;
+
+      progress.reusedChunks +=
+        cachedVaultChunks.length;
+
+      if (
+        cached.sourceType ===
+          "pdf" &&
+        cached.pageCount
+      ) {
+        progress.knownPdfPages +=
+          cached.pageCount;
+
+        progress.completedPdfPages +=
+          cached.pageCount;
+      }
+
+      this.updateRebuildStatus(
+        progress,
+      );
+    }
+
+    return {
+      file,
+      fileHash,
+      source,
+      chunks: [],
+      cachedVaultChunks,
+      reusedFromPortable:
+        true,
+    };
+  }
+
+  private async cachePreparedDocument(
+    prepared:
+      PreparedDocument,
+    chunks: VaultChunk[],
+  ): Promise<void> {
+    if (
+      prepared
+        .reusedFromPortable
+    ) {
+      return;
+    }
+
+    try {
+      await this.portableIndex
+        .putSource(
+          prepared.file.path,
+          prepared.fileHash,
+          prepared.source
+            .sourceType,
+          prepared.file.name,
+          prepared.source.title,
+          prepared.source
+            .pageCount,
+          chunks,
+        );
+    } catch (error) {
+      /*
+       * Search/index correctness wins over cache portability. The next
+       * persist or startup migration can retry exporting this source.
+       */
+      console.warn(
+        `[Local Vault AI] Could not save portable source cache for ${prepared.file.path}.`,
+        error,
+      );
+    }
   }
 
   private async prepareDocument(
@@ -1638,6 +2081,18 @@ if (
         fileHash
     ) {
       return null;
+    }
+
+    const cached =
+      await this
+        .tryPreparePortableDocument(
+          file,
+          fileHash,
+          progress,
+        );
+
+    if (cached) {
+      return cached;
     }
 
     const metadata =
@@ -1773,6 +2228,18 @@ if (
         fileHash
     ) {
       return null;
+    }
+
+    const cached =
+      await this
+        .tryPreparePortableDocument(
+          file,
+          fileHash,
+          progress,
+        );
+
+    if (cached) {
+      return cached;
     }
 
     /*
@@ -2141,7 +2608,7 @@ if (
   private async commitPreparedDocument(
     prepared:
       PreparedDocument,
-  ): Promise<void> {
+  ): Promise<VaultChunk[]> {
     if (!this.manifest) {
       throw new Error(
         "Index manifest is not initialized.",
@@ -2153,6 +2620,7 @@ if (
       fileHash,
       source,
       chunks,
+      cachedVaultChunks,
     } =
       prepared;
 
@@ -2170,31 +2638,37 @@ if (
         );
     }
 
-    const chunkIds:
-      string[] = [];
+    let vaultChunks:
+      VaultChunk[];
 
-    const sourceSearchName =
-      [
-        normalizeSourceName(
-          file.basename,
-        ),
+    if (cachedVaultChunks) {
+      /*
+       * mtime is intentionally excluded from portable objects so the same
+       * cached chunks remain byte-identical after a Git clone. Rehydrate
+       * only that machine-specific field when rebuilding the runtime index.
+       */
+      vaultChunks =
+        cachedVaultChunks
+          .map(
+            (chunk) => ({
+              ...chunk,
+              mtime:
+                file.stat.mtime,
+            }),
+          );
+    } else {
+      const sourceSearchName =
+        [
+          normalizeSourceName(
+            file.basename,
+          ),
 
-        normalizeSourceName(
-          source.title,
-        ),
-      ]
-        .filter(Boolean)
-        .join(" ");
-
-    for (
-      const chunk of
-      chunks
-    ) {
-      const id =
-        this.chunkId(
-          file.path,
-          chunk.index,
-        );
+          normalizeSourceName(
+            source.title,
+          ),
+        ]
+          .filter(Boolean)
+          .join(" ");
 
       const folder =
         file.parent?.path ===
@@ -2204,83 +2678,139 @@ if (
               ?.path ??
             "";
 
-      const vaultChunk:
-        VaultChunk = {
-        id,
+      vaultChunks =
+        chunks.map(
+          (chunk): VaultChunk => {
+            const id =
+              this.chunkId(
+                file.path,
+                chunk.index,
+              );
 
-        sourceKey:
-          file.path,
+            return {
+              id,
 
-        sourceType:
-          source.sourceType,
+              sourceKey:
+                file.path,
 
-        sourceSearchName,
+              sourceType:
+                source.sourceType,
 
-        sectionKey:
-          chunk.sectionNumber ||
-          NO_SECTION_KEY,
+              sourceSearchName,
 
-        filePath:
-          file.path,
+              sectionKey:
+                chunk.sectionNumber ||
+                NO_SECTION_KEY,
 
-        fileName:
-          file.name,
+              filePath:
+                file.path,
 
-        folder,
+              fileName:
+                file.name,
 
-        title:
-          source.title,
+              folder,
 
-        heading:
-          chunk.heading,
+              title:
+                source.title,
 
-        sectionNumber:
-          chunk.sectionNumber,
+              heading:
+                chunk.heading,
 
-        sectionTitle:
-          chunk.sectionTitle,
+              sectionNumber:
+                chunk.sectionNumber,
 
-        content:
-          chunk.content,
+              sectionTitle:
+                chunk.sectionTitle,
 
-        tags:
-          source.tags,
+              content:
+                chunk.content,
 
-        links:
-          source.links,
+              tags:
+                source.tags,
 
-        properties:
-          source.properties,
+              links:
+                source.links,
 
-        pageStart:
-          chunk.pageStart,
+              properties:
+                source.properties,
 
-        pageEnd:
-          chunk.pageEnd,
+              pageStart:
+                chunk.pageStart,
 
-        mtime:
-          file.stat.mtime,
+              pageEnd:
+                chunk.pageEnd,
 
-        embedding:
-          chunk.embedding,
-      };
+              mtime:
+                file.stat.mtime,
 
-      await this
-        .knowledgeIndex
-        .add(
-          vaultChunk,
+              embedding:
+                chunk.embedding,
+            };
+          },
         );
+    }
 
-      chunkIds.push(id);
+    /*
+     * Chunk ids are the primary key in Orama. A malformed/stale portable
+     * source should never make one source fail the entire rebuild just
+     * because the same id appears twice in the prepared payload. Keep the
+     * last copy for that logical chunk and make the manifest match exactly
+     * what is inserted into the runtime index.
+     */
+    if (
+      vaultChunks.length > 1
+    ) {
+      const uniqueById =
+        new Map<
+          string,
+          VaultChunk
+        >();
+
+      for (const chunk of vaultChunks) {
+        uniqueById.set(
+          chunk.id,
+          chunk,
+        );
+      }
 
       if (
-        chunkIds.length %
-          COMMIT_YIELD_EVERY_CHUNKS ===
-        0
+        uniqueById.size !==
+        vaultChunks.length
       ) {
-        await this.yieldToUi();
+        console.warn(
+          `[Local Vault AI] Removed ${vaultChunks.length - uniqueById.size} duplicate chunk id(s) while rebuilding ${file.path}.`,
+        );
+
+        vaultChunks =
+          [...uniqueById.values()];
       }
     }
+
+    for (
+      let offset = 0;
+      offset <
+      vaultChunks.length;
+      offset +=
+      COMMIT_INSERT_BATCH_SIZE
+    ) {
+      await this
+        .knowledgeIndex
+        .addMany(
+          vaultChunks.slice(
+            offset,
+            offset +
+              COMMIT_INSERT_BATCH_SIZE,
+          ),
+        );
+
+      await this.yieldToUi();
+    }
+
+    const chunkIds =
+      vaultChunks.map(
+        (chunk) =>
+          chunk.id,
+      );
 
     this.manifest
       .documents[
@@ -2306,6 +2836,8 @@ if (
       pageCount:
         source.pageCount,
     };
+
+    return vaultChunks;
   }
 
   private async removeDocument(
@@ -2324,6 +2856,11 @@ if (
               .documents[
               path
             ];
+
+          this.portableIndex
+            .removeSource(
+              path,
+            );
 
           if (!existing) {
             return;
@@ -2400,6 +2937,16 @@ if (
             if (!this.manifest) {
               return;
             }
+
+            /*
+             * Persist the portable source map first. If the larger Orama
+             * runtime snapshot fails later, already-indexed source objects
+             * are still durable and can be reused on the next rebuild.
+             */
+            await this.portableIndex
+              .save();
+
+            await this.yieldToUi();
 
             await this.fileSystem
               .run(
@@ -2481,6 +3028,40 @@ if (
           "indexing",
           `Saving rebuild checkpoint · ${progress.completedSources}/${progress.totalSources} sources processed...`,
         );
+
+        const checkpointAttemptAt =
+          Date.now();
+
+        /*
+         * Mark the recovery snapshot unsafe before replacing either half of
+         * the runtime snapshot. If Obsidian closes after the Orama snapshot
+         * is written but before index-manifest.json is written, the next
+         * rebuild will reconstruct from the portable cache instead of
+         * resuming a mixed-generation index/manifest pair.
+         */
+        await this.saveRebuildCheckpoint({
+          version: 1,
+          indexVersion:
+            INDEX_VERSION,
+          embeddingProvider:
+            embeddingDescriptor.provider,
+          embeddingIdentity:
+            embeddingDescriptor.identity,
+          embeddingDimensions:
+            dimensions,
+          indexPdfSources:
+            this.settings.indexPdfSources,
+          startedAt:
+            rebuildStartedAt,
+          lastCheckpointAt:
+            checkpointAttemptAt,
+          completedSources:
+            progress.completedSources,
+          totalSources:
+            progress.totalSources,
+          snapshotSaved:
+            false,
+        });
 
         await this.yieldToUi();
         await this.persistNow();
@@ -3152,6 +3733,12 @@ if (
         ? `${progress.completedPdfPages}/${progress.knownPdfPages} known PDF pages extracted`
         : "waiting for PDF pages";
 
+    const reusedText =
+      progress.reusedSources >
+        0
+        ? ` · ${progress.reusedSources} source(s) reused from portable cache`
+        : "";
+
     this.setTransientStatus(
       "indexing",
       `Indexing ${progress.completedSources}/${progress.totalSources} sources` +
@@ -3161,6 +3748,7 @@ if (
         ` · ${progress.activeEmbeddingRequests} embedding job(s) active` +
         ` · ${pdfPageText}` +
         ` · ${knownChunkText}` +
+        reusedText +
         activeSuffix,
     );
   }

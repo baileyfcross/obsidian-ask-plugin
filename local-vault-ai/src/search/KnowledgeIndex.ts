@@ -56,6 +56,92 @@ const SOURCE_MATCH_MARGIN =
 const SOURCE_SUGGESTION_THRESHOLD =
   35;
 
+
+/*
+ * V8 cannot create JSON strings larger than roughly 512 MiB. Large
+ * vaults with many embedded PDF chunks can exceed that limit even
+ * though Orama itself can still hold the index in memory.
+ *
+ * Persist the Orama RawData as many small JSON shards instead of one
+ * monolithic JSON.stringify(raw) call. The small knowledge-index.json
+ * file becomes a manifest that points at those shards.
+ */
+const SHARDED_INDEX_FORMAT =
+  "local-vault-ai-orama-sharded-v1";
+
+const SHARDED_INDEX_VERSION =
+  1;
+
+const SHARD_TARGET_CHARACTERS =
+  8 * 1024 * 1024;
+
+const SHARD_INITIAL_GROUP_SIZE =
+  256;
+
+const SHARD_IO_YIELD_INTERVAL =
+  4;
+
+interface ShardFileRange {
+  start: number;
+  file: string;
+}
+
+interface ShardArrayChild {
+  index: number;
+  node: ShardNode;
+}
+
+interface ShardObjectChild {
+  key: string;
+  node: ShardNode;
+}
+
+type ShardNode =
+  | {
+      kind: "inline";
+      value: unknown;
+    }
+  | {
+      kind: "undefined";
+    }
+  | {
+      kind: "file";
+      file: string;
+    }
+  | {
+      kind: "array";
+      length: number;
+      files: ShardFileRange[];
+      children: ShardArrayChild[];
+    }
+  | {
+      kind: "object";
+      files: string[];
+      children: ShardObjectChild[];
+    };
+
+interface ShardedIndexManifest {
+  format: typeof SHARDED_INDEX_FORMAT;
+  version: typeof SHARDED_INDEX_VERSION;
+  dimensions: number;
+  createdAt: number;
+  generation: string;
+  shardFiles: string[];
+  root: ShardNode;
+}
+
+interface ShardWriteContext {
+  generation: string;
+  shardDirectory: string;
+  shardFiles: string[];
+  nextPart: number;
+  writesSinceYield: number;
+}
+
+interface ShardReadContext {
+  readsSinceYield: number;
+}
+
 export class KnowledgeIndex {
   private db:
     any | null = null;
@@ -177,18 +263,47 @@ export class KnowledgeIndex {
           this.indexPath,
         );
 
-    const raw =
+    const parsed =
       JSON.parse(
         serialized,
       );
 
+    if (
+      isShardedIndexManifest(
+        parsed,
+      )
+    ) {
+      const raw =
+        await this.readShardedNode(
+          parsed.root,
+          {
+            readsSinceYield: 0,
+          },
+        );
+
+      await this.createEmpty(
+        dimensions,
+      );
+
+      await loadOrama(
+        this.db,
+        raw as Parameters<typeof loadOrama>[1],
+      );
+
+      return;
+    }
+
+    /*
+     * Backward compatibility with the original single-file JSON
+     * snapshot format. Existing smaller indexes continue to load.
+     */
     await this.createEmpty(
       dimensions,
     );
 
     await loadOrama(
       this.db,
-      raw,
+      parsed,
     );
   }
 
@@ -200,10 +315,712 @@ export class KnowledgeIndex {
         this.db,
       );
 
+    const shardDirectory =
+      this.getShardDirectory();
+
+    await this.ensureDirectory(
+      shardDirectory,
+    );
+
+    const generation =
+      createShardGeneration();
+
+    const context:
+      ShardWriteContext = {
+        generation,
+        shardDirectory,
+        shardFiles: [],
+        nextPart: 0,
+        writesSinceYield: 0,
+      };
+
+    const root =
+      await this.writeShardedNode(
+        raw,
+        context,
+      );
+
+    const manifest:
+      ShardedIndexManifest = {
+        format:
+          SHARDED_INDEX_FORMAT,
+        version:
+          SHARDED_INDEX_VERSION,
+        dimensions:
+          this.dimensions,
+        createdAt:
+          Date.now(),
+        generation,
+        shardFiles:
+          context.shardFiles,
+        root,
+      };
+
+    /*
+     * This JSON stays small. All large Orama structures are already
+     * stored in the shard files, so this stringify cannot approach
+     * V8's giant-string ceiling.
+     */
     await this.adapter.write(
       this.indexPath,
-      JSON.stringify(raw),
+      JSON.stringify(
+        manifest,
+      ),
     );
+
+    /*
+     * The new manifest is durable now. Old/orphaned generations can
+     * be removed without risking the newly saved snapshot.
+     */
+    await this.cleanupOldShards(
+      new Set(
+        context.shardFiles,
+      ),
+    );
+  }
+
+  private async writeShardedNode(
+    value: unknown,
+    context: ShardWriteContext,
+  ): Promise<ShardNode> {
+    if (
+      value === undefined
+    ) {
+      return {
+        kind: "undefined",
+      };
+    }
+
+    if (
+      value === null ||
+      typeof value !==
+        "object"
+    ) {
+      const serialized =
+        serializeForShard(
+          value,
+        );
+
+      if (
+        serialized.length <=
+        SHARD_TARGET_CHARACTERS
+      ) {
+        return {
+          kind: "inline",
+          value,
+        };
+      }
+
+      return {
+        kind: "file",
+        file:
+          await this.writeShard(
+            serialized,
+            context,
+          ),
+      };
+    }
+
+    if (
+      Array.isArray(value)
+    ) {
+      return this.writeShardedArray(
+        value,
+        context,
+      );
+    }
+
+    return this.writeShardedObject(
+      value as Record<
+        string,
+        unknown
+      >,
+      context,
+    );
+  }
+
+  private async writeShardedArray(
+    values: unknown[],
+    context: ShardWriteContext,
+  ): Promise<ShardNode> {
+    if (
+      values.length === 0
+    ) {
+      return {
+        kind: "inline",
+        value: [],
+      };
+    }
+
+    const files:
+      ShardFileRange[] = [];
+
+    const children:
+      ShardArrayChild[] = [];
+
+    for (
+      let start = 0;
+      start < values.length;
+      start +=
+        SHARD_INITIAL_GROUP_SIZE
+    ) {
+      await this.writeArrayRange(
+        values,
+        start,
+        Math.min(
+          values.length,
+          start +
+            SHARD_INITIAL_GROUP_SIZE,
+        ),
+        files,
+        children,
+        context,
+      );
+    }
+
+    return {
+      kind: "array",
+      length:
+        values.length,
+      files,
+      children,
+    };
+  }
+
+  private async writeArrayRange(
+    values: unknown[],
+    start: number,
+    end: number,
+    files: ShardFileRange[],
+    children: ShardArrayChild[],
+    context: ShardWriteContext,
+  ): Promise<void> {
+    const slice =
+      values.slice(
+        start,
+        end,
+      );
+
+    const serialized =
+      trySerializeForShard(
+        slice,
+      );
+
+    if (
+      serialized !== null &&
+      serialized.length <=
+        SHARD_TARGET_CHARACTERS
+    ) {
+      files.push({
+        start,
+        file:
+          await this.writeShard(
+            serialized,
+            context,
+          ),
+      });
+
+      return;
+    }
+
+    if (
+      end - start > 1
+    ) {
+      const middle =
+        start +
+        Math.floor(
+          (end - start) /
+            2,
+        );
+
+      await this.writeArrayRange(
+        values,
+        start,
+        middle,
+        files,
+        children,
+        context,
+      );
+
+      await this.writeArrayRange(
+        values,
+        middle,
+        end,
+        files,
+        children,
+        context,
+      );
+
+      return;
+    }
+
+    children.push({
+      index: start,
+      node:
+        await this.writeShardedNode(
+          values[start],
+          context,
+        ),
+    });
+  }
+
+  private async writeShardedObject(
+    value: Record<
+      string,
+      unknown
+    >,
+    context: ShardWriteContext,
+  ): Promise<ShardNode> {
+    const keys =
+      Object.keys(
+        value,
+      );
+
+    if (
+      keys.length === 0
+    ) {
+      return {
+        kind: "inline",
+        value: {},
+      };
+    }
+
+    const files:
+      string[] = [];
+
+    const children:
+      ShardObjectChild[] = [];
+
+    for (
+      let start = 0;
+      start < keys.length;
+      start +=
+        SHARD_INITIAL_GROUP_SIZE
+    ) {
+      await this.writeObjectRange(
+        value,
+        keys,
+        start,
+        Math.min(
+          keys.length,
+          start +
+            SHARD_INITIAL_GROUP_SIZE,
+        ),
+        files,
+        children,
+        context,
+      );
+    }
+
+    return {
+      kind: "object",
+      files,
+      children,
+    };
+  }
+
+  private async writeObjectRange(
+    value: Record<
+      string,
+      unknown
+    >,
+    keys: string[],
+    start: number,
+    end: number,
+    files: string[],
+    children: ShardObjectChild[],
+    context: ShardWriteContext,
+  ): Promise<void> {
+    const piece:
+      Record<
+        string,
+        unknown
+      > = {};
+
+    for (
+      let index = start;
+      index < end;
+      index += 1
+    ) {
+      const key =
+        keys[index];
+
+      if (
+        key !== undefined
+      ) {
+        piece[key] =
+          value[key];
+      }
+    }
+
+    const serialized =
+      trySerializeForShard(
+        piece,
+      );
+
+    if (
+      serialized !== null &&
+      serialized.length <=
+        SHARD_TARGET_CHARACTERS
+    ) {
+      files.push(
+        await this.writeShard(
+          serialized,
+          context,
+        ),
+      );
+
+      return;
+    }
+
+    if (
+      end - start > 1
+    ) {
+      const middle =
+        start +
+        Math.floor(
+          (end - start) /
+            2,
+        );
+
+      await this.writeObjectRange(
+        value,
+        keys,
+        start,
+        middle,
+        files,
+        children,
+        context,
+      );
+
+      await this.writeObjectRange(
+        value,
+        keys,
+        middle,
+        end,
+        files,
+        children,
+        context,
+      );
+
+      return;
+    }
+
+    const key =
+      keys[start];
+
+    if (
+      key === undefined
+    ) {
+      return;
+    }
+
+    children.push({
+      key,
+      node:
+        await this.writeShardedNode(
+          value[key],
+          context,
+        ),
+    });
+  }
+
+  private async writeShard(
+    serialized: string,
+    context: ShardWriteContext,
+  ): Promise<string> {
+    const part =
+      String(
+        context.nextPart,
+      ).padStart(
+        6,
+        "0",
+      );
+
+    context.nextPart +=
+      1;
+
+    const file =
+      `${context.shardDirectory}/${context.generation}-${part}.json`;
+
+    await this.adapter.write(
+      file,
+      serialized,
+    );
+
+    context.shardFiles.push(
+      file,
+    );
+
+    context.writesSinceYield +=
+      1;
+
+    if (
+      context.writesSinceYield >=
+      SHARD_IO_YIELD_INTERVAL
+    ) {
+      context.writesSinceYield =
+        0;
+
+      await yieldPersistenceUi();
+    }
+
+    return file;
+  }
+
+  private async readShardedNode(
+    node: ShardNode,
+    context: ShardReadContext,
+  ): Promise<unknown> {
+    switch (
+      node.kind
+    ) {
+      case "inline":
+        return node.value;
+
+      case "undefined":
+        return undefined;
+
+      case "file":
+        return this.readShardValue(
+          node.file,
+          context,
+        );
+
+      case "array": {
+        const result =
+          new Array<unknown>(
+            node.length,
+          );
+
+        for (
+          const part of
+          node.files
+        ) {
+          const values =
+            await this.readShardValue(
+              part.file,
+              context,
+            );
+
+          if (
+            !Array.isArray(
+              values,
+            )
+          ) {
+            throw new Error(
+              `Knowledge index shard "${part.file}" is not an array. Rebuild the index.`,
+            );
+          }
+
+          for (
+            let offset = 0;
+            offset < values.length;
+            offset += 1
+          ) {
+            result[
+              part.start +
+                offset
+            ] =
+              values[offset];
+          }
+        }
+
+        for (
+          const child of
+          node.children
+        ) {
+          result[
+            child.index
+          ] =
+            await this.readShardedNode(
+              child.node,
+              context,
+            );
+        }
+
+        return result;
+      }
+
+      case "object": {
+        const result:
+          Record<
+            string,
+            unknown
+          > = {};
+
+        for (
+          const file of
+          node.files
+        ) {
+          const value =
+            await this.readShardValue(
+              file,
+              context,
+            );
+
+          if (
+            !isRecord(
+              value,
+            )
+          ) {
+            throw new Error(
+              `Knowledge index shard "${file}" is not an object. Rebuild the index.`,
+            );
+          }
+
+          Object.assign(
+            result,
+            value,
+          );
+        }
+
+        for (
+          const child of
+          node.children
+        ) {
+          result[
+            child.key
+          ] =
+            await this.readShardedNode(
+              child.node,
+              context,
+            );
+        }
+
+        return result;
+      }
+    }
+  }
+
+  private async readShardValue(
+    file: string,
+    context: ShardReadContext,
+  ): Promise<unknown> {
+    if (
+      !(await this.adapter
+        .exists(file))
+    ) {
+      throw new Error(
+        `Knowledge index shard "${file}" is missing. Rebuild the index.`,
+      );
+    }
+
+    const serialized =
+      await this.adapter.read(
+        file,
+      );
+
+    const value =
+      JSON.parse(
+        serialized,
+      );
+
+    context.readsSinceYield +=
+      1;
+
+    if (
+      context.readsSinceYield >=
+      SHARD_IO_YIELD_INTERVAL
+    ) {
+      context.readsSinceYield =
+        0;
+
+      await yieldPersistenceUi();
+    }
+
+    return value;
+  }
+
+  private getShardDirectory():
+    string {
+    const slash =
+      this.indexPath
+        .lastIndexOf(
+          "/",
+        );
+
+    const parent =
+      slash >= 0
+        ? this.indexPath.slice(
+            0,
+            slash,
+          )
+        : "";
+
+    return parent
+      ? `${parent}/knowledge-index-shards`
+      : "knowledge-index-shards";
+  }
+
+  private async ensureDirectory(
+    path: string,
+  ): Promise<void> {
+    if (
+      await this.adapter.exists(
+        path,
+      )
+    ) {
+      return;
+    }
+
+    await this.adapter.mkdir(
+      path,
+    );
+  }
+
+  private async cleanupOldShards(
+    keep: Set<string>,
+  ): Promise<void> {
+    const shardDirectory =
+      this.getShardDirectory();
+
+    try {
+      if (
+        !(await this.adapter
+          .exists(
+            shardDirectory,
+          ))
+      ) {
+        return;
+      }
+
+      const listing =
+        await this.adapter.list(
+          shardDirectory,
+        );
+
+      for (
+        const file of
+        listing.files
+      ) {
+        if (
+          keep.has(file)
+        ) {
+          continue;
+        }
+
+        try {
+          await this.adapter.remove(
+            file,
+          );
+        } catch (error) {
+          console.warn(
+            `[Local Vault AI] Could not remove stale knowledge-index shard "${file}".`,
+            error,
+          );
+        }
+      }
+    } catch (error) {
+      /*
+       * Cleanup is best effort. Never invalidate a successfully saved
+       * snapshot just because stale files could not be removed.
+       */
+      console.warn(
+        "[Local Vault AI] Could not clean stale knowledge-index shards.",
+        error,
+      );
+    }
   }
 
   async existsOnDisk():
@@ -924,6 +1741,131 @@ export class KnowledgeIndex {
       );
     }
   }
+}
+
+
+function isShardedIndexManifest(
+  value: unknown,
+): value is ShardedIndexManifest {
+  if (
+    !isRecord(value)
+  ) {
+    return false;
+  }
+
+  return (
+    value.format ===
+      SHARDED_INDEX_FORMAT &&
+    value.version ===
+      SHARDED_INDEX_VERSION &&
+    typeof value.dimensions ===
+      "number" &&
+    typeof value.generation ===
+      "string" &&
+    Array.isArray(
+      value.shardFiles,
+    ) &&
+    isRecord(
+      value.root,
+    )
+  );
+}
+
+function isRecord(
+  value: unknown,
+): value is Record<
+  string,
+  unknown
+> {
+  return (
+    typeof value ===
+      "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  );
+}
+
+function serializeForShard(
+  value: unknown,
+): string {
+  const serialized =
+    JSON.stringify(
+      value,
+    );
+
+  if (
+    serialized === undefined
+  ) {
+    return "null";
+  }
+
+  return serialized;
+}
+
+function trySerializeForShard(
+  value: unknown,
+): string | null {
+  try {
+    return serializeForShard(
+      value,
+    );
+  } catch (error) {
+    if (
+      isStringLengthError(
+        error,
+      )
+    ) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+function isStringLengthError(
+  error: unknown,
+): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  const normalized =
+    message.toLowerCase();
+
+  return (
+    normalized.includes(
+      "invalid string length",
+    ) ||
+    normalized.includes(
+      "string longer than",
+    ) ||
+    normalized.includes(
+      "err_string_too_long",
+    )
+  );
+}
+
+function createShardGeneration():
+  string {
+  return (
+    `${Date.now().toString(36)}-` +
+    Math.random()
+      .toString(36)
+      .slice(2, 8)
+  );
+}
+
+async function yieldPersistenceUi():
+  Promise<void> {
+  await new Promise<void>(
+    (resolve) => {
+      window.setTimeout(
+        resolve,
+        0,
+      );
+    },
+  );
 }
 
 function normalizeSectionNumber(

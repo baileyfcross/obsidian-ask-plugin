@@ -74,10 +74,10 @@ const PERSIST_DEBOUNCE_MS =
  * the full Orama index is expensive.
  */
 const REBUILD_CHECKPOINT_SOURCE_INTERVAL =
-  1000;
+  2000;
 
 const REBUILD_CHECKPOINT_MAX_AGE_MS =
-  10 * 60 * 1000;
+  20 * 60 * 1000;
 
 /*
  * Rebuild progress used to update the chat UI on virtually every page
@@ -85,7 +85,15 @@ const REBUILD_CHECKPOINT_MAX_AGE_MS =
  * cannot flood Obsidian's renderer.
  */
 const REBUILD_STATUS_MIN_INTERVAL_MS =
-  200;
+  1000;
+
+/*
+ * Orama insert() can resolve through a long chain of microtasks.
+ * Yield periodically so Electron has a chance to composite and paint
+ * while a large PDF is being committed.
+ */
+const COMMIT_YIELD_EVERY_CHUNKS =
+  16;
 
 const NO_SECTION_KEY =
   "__none__";
@@ -95,6 +103,16 @@ const MIN_SOURCE_CONCURRENCY =
 
 const MAX_SOURCE_CONCURRENCY =
   8;
+
+/*
+ * Local ONNX embeddings execute on the same Electron renderer that draws
+ * Obsidian. Once local embeddings are the bottleneck, extra source/PDF
+ * workers mostly increase memory pressure and UI contention rather than
+ * throughput. Keep only enough parallelism to overlap one source preparing
+ * with another source embedding.
+ */
+const LOCAL_SOURCE_CONCURRENCY_CAP =
+  2;
 
 const MIN_FILESYSTEM_CONCURRENCY =
   1;
@@ -108,11 +126,17 @@ const MIN_PDF_PAGE_CONCURRENCY =
 const MAX_PDF_PAGE_CONCURRENCY =
   16;
 
+const LOCAL_PDF_PAGE_CONCURRENCY_CAP =
+  1;
+
 const MIN_EMBEDDING_BATCH_SIZE =
   4;
 
 const MAX_EMBEDDING_BATCH_SIZE =
   128;
+
+const LOCAL_EMBEDDING_BATCH_SIZE_CAP =
+  8;
 
 const MIN_EMBEDDING_CONCURRENCY =
   1;
@@ -279,12 +303,21 @@ export class IndexManager {
     new AsyncSemaphore(1);
 
   /*
-   * Reading several large PDFs from Obsidian's adapter at the same time
-   * can stall Electron even when page extraction itself is bounded. Keep
-   * only the binary file read serialized; extraction/embedding can still
-   * overlap after the bytes are in memory.
+   * Keep PDF reads bounded, but do not serialize every PDF behind one
+   * reader. Two concurrent binary reads gives the source workers enough
+   * overlap to avoid the severe PDF slowdown from the previous patch
+   * while still preventing all filesystem workers from reading large
+   * PDFs at once. FileSystemGate remains the outer I/O safety limit.
    */
   private readonly pdfReadSemaphore =
+    new AsyncSemaphore(2);
+
+  /*
+   * When Obsidian is minimized or unfocused, keep large PDF reads
+   * serialized. Foreground indexing still uses the normal two-reader
+   * limit above.
+   */
+  private readonly backgroundPdfReadSemaphore =
     new AsyncSemaphore(1);
 
   /*
@@ -992,7 +1025,7 @@ if (
         await this.rebuildCheckpointInFlight;
       }
 
-      this.setStatus(
+      this.setTransientStatus(
         "indexing",
         `Saving final knowledge index · ${progress.completedSources}/${progress.totalSources} sources processed...`,
       );
@@ -1694,19 +1727,29 @@ if (
       );
     }
 
+    const readPdfBuffer =
+      async (): Promise<ArrayBuffer> =>
+        this.pdfReadSemaphore
+          .run(
+            async () =>
+              this.fileSystem
+                .run(
+                  "reading PDF source",
+                  file.path,
+                  async () =>
+                    this.app.vault
+                      .readBinary(file),
+                ),
+          );
+
     const buffer =
-      await this.pdfReadSemaphore
-        .run(
-          async () =>
-            this.fileSystem
-              .run(
-                "reading PDF source",
-                file.path,
-                async () =>
-                  this.app.vault
-                    .readBinary(file),
-              ),
-        );
+      this.isRendererBackgrounded()
+        ? await this
+            .backgroundPdfReadSemaphore
+            .run(
+              readPdfBuffer,
+            )
+        : await readPdfBuffer();
 
     const bytes =
       new Uint8Array(
@@ -1745,6 +1788,15 @@ if (
         bytes,
         file.name,
         {
+          /*
+           * The caller has already hashed the PDF and does not need the
+           * byte array again. Let PDF.js own this buffer instead of
+           * duplicating it, which substantially reduces renderer memory
+           * pressure while multiple PDFs are active.
+           */
+          copyInput:
+            false,
+
           /*
            * A PDF gets up to the configured number of
            * local page workers, but every PDF shares
@@ -1994,11 +2046,21 @@ if (
                             ),
                         );
 
+                    /*
+                     * Give Electron a real event-loop turn before and
+                     * after a potentially expensive local ONNX batch.
+                     * This prevents a chain of source workers from
+                     * starving the renderer/compositor.
+                     */
+                    await this.yieldToUi();
+
                     const embeddings =
                       await this.embeddings
                         .embed(
                           inputs,
                         );
+
+                    await this.yieldToUi();
 
                     if (
                       embeddings.length !==
@@ -2210,6 +2272,14 @@ if (
         );
 
       chunkIds.push(id);
+
+      if (
+        chunkIds.length %
+          COMMIT_YIELD_EVERY_CHUNKS ===
+        0
+      ) {
+        await this.yieldToUi();
+      }
     }
 
     this.manifest
@@ -2407,7 +2477,7 @@ if (
 
     const checkpointPromise =
       (async () => {
-        this.setStatus(
+        this.setTransientStatus(
           "indexing",
           `Saving rebuild checkpoint · ${progress.completedSources}/${progress.totalSources} sources processed...`,
         );
@@ -2709,8 +2779,56 @@ if (
     }
   }
 
+  private isRendererBackgrounded():
+    boolean {
+    const htmlDocument =
+      globalThis.document;
+
+    if (!htmlDocument) {
+      return false;
+    }
+
+    return (
+      htmlDocument.visibilityState !==
+        "visible" ||
+      !htmlDocument.hasFocus()
+    );
+  }
+
+  /*
+   * Use MessageChannel instead of relying only on setTimeout(0).
+   * Chromium aggressively throttles timers for minimized/background
+   * windows, while a posted message still gives the event loop a real
+   * task boundary. That allows Electron to process compositor/window
+   * work between indexing batches.
+   */
   private async yieldToUi():
     Promise<void> {
+    if (
+      typeof MessageChannel !==
+      "undefined"
+    ) {
+      await new Promise<void>(
+        (resolve) => {
+          const channel =
+            new MessageChannel();
+
+          channel.port1.onmessage =
+            () => {
+              channel.port1.close();
+              channel.port2.close();
+              resolve();
+            };
+
+          channel.port2.postMessage(
+            null,
+          );
+        },
+      );
+
+      return;
+    }
+
     await new Promise<void>(
       (resolve) => {
         window.setTimeout(
@@ -2854,13 +2972,26 @@ if (
 
   private sourceConcurrency():
     number {
-    return this.clampInteger(
-      this.settings
-        .indexingConcurrency,
-      MIN_SOURCE_CONCURRENCY,
-      MAX_SOURCE_CONCURRENCY,
-      3,
-    );
+    const configured =
+      this.clampInteger(
+        this.settings
+          .indexingConcurrency,
+        MIN_SOURCE_CONCURRENCY,
+        MAX_SOURCE_CONCURRENCY,
+        3,
+      );
+
+    if (
+      this.embeddings
+        .usesLocalEmbeddings()
+    ) {
+      return Math.min(
+        configured,
+        LOCAL_SOURCE_CONCURRENCY_CAP,
+      );
+    }
+
+    return configured;
   }
 
   private filesystemConcurrency():
@@ -2876,24 +3007,50 @@ if (
 
   private pdfPageConcurrency():
     number {
-    return this.clampInteger(
-      this.settings
-        .pdfPageConcurrency,
-      MIN_PDF_PAGE_CONCURRENCY,
-      MAX_PDF_PAGE_CONCURRENCY,
-      6,
-    );
+    const configured =
+      this.clampInteger(
+        this.settings
+          .pdfPageConcurrency,
+        MIN_PDF_PAGE_CONCURRENCY,
+        MAX_PDF_PAGE_CONCURRENCY,
+        6,
+      );
+
+    if (
+      this.embeddings
+        .usesLocalEmbeddings()
+    ) {
+      return Math.min(
+        configured,
+        LOCAL_PDF_PAGE_CONCURRENCY_CAP,
+      );
+    }
+
+    return configured;
   }
 
   private embeddingBatchSize():
     number {
-    return this.clampInteger(
-      this.settings
-        .embeddingBatchSize,
-      MIN_EMBEDDING_BATCH_SIZE,
-      MAX_EMBEDDING_BATCH_SIZE,
-      32,
-    );
+    const configured =
+      this.clampInteger(
+        this.settings
+          .embeddingBatchSize,
+        MIN_EMBEDDING_BATCH_SIZE,
+        MAX_EMBEDDING_BATCH_SIZE,
+        32,
+      );
+
+    if (
+      this.embeddings
+        .usesLocalEmbeddings()
+    ) {
+      return Math.min(
+        configured,
+        LOCAL_EMBEDDING_BATCH_SIZE_CAP,
+      );
+    }
+
+    return configured;
   }
 
   private embeddingConcurrency():
@@ -2943,6 +3100,18 @@ if (
     const now =
       Date.now();
 
+    /*
+     * Do not keep driving chat-toolbar DOM updates while Electron is
+     * minimized/unfocused. The in-memory counters continue advancing and
+     * the next foreground update is emitted immediately.
+     */
+    if (
+      !force &&
+      this.isRendererBackgrounded()
+    ) {
+      return;
+    }
+
     if (
       !force &&
       now -
@@ -2983,7 +3152,7 @@ if (
         ? `${progress.completedPdfPages}/${progress.knownPdfPages} known PDF pages extracted`
         : "waiting for PDF pages";
 
-    this.setStatus(
+    this.setTransientStatus(
       "indexing",
       `Indexing ${progress.completedSources}/${progress.totalSources} sources` +
         ` · ${progress.activeSources.size} source worker(s) active` +
@@ -3085,6 +3254,34 @@ if (
     return this.manifest
       ?.indexPdfSources ??
       true;
+  }
+
+  /*
+   * Rebuild progress is emitted frequently. Do not rescan the entire
+   * manifest/chunk list for every progress message; with thousands of
+   * documents and tens of thousands of chunks that O(n) recount was a
+   * major source of renderer lag. Durable saves and final status updates
+   * still refresh the exact counts.
+   */
+  private setTransientStatus(
+    state:
+      IndexStatus[
+        "state"
+      ],
+    message: string,
+  ): void {
+    this.status = {
+      ...this.status,
+      state,
+      message,
+      lastIndexedAt:
+        this.manifest
+          ?.lastIndexedAt ??
+        this.status
+          .lastIndexedAt,
+    };
+
+    this.emitStatus();
   }
 
   private setStatus(

@@ -43,10 +43,166 @@ export interface PdfExtractionOptions {
   pageConcurrency?:
     number;
 
+  /*
+   * Defaults to true for backward compatibility. IndexManager hashes
+   * PDF bytes before extraction, so rebuilds can pass false and avoid a
+   * second full copy of every PDF in renderer memory.
+   */
+  copyInput?:
+    boolean;
+
   onProgress?: (
     progress:
       PdfExtractionProgress,
   ) => void;
+}
+
+/*
+ * PDF.js is bundled through its fake-worker path in Obsidian, so PDF
+ * parsing/text extraction ultimately competes with the Electron renderer.
+ *
+ * Keep background extraction deliberately conservative and create
+ * cooperative event-loop breaks so minimizing/alt-tabbing Obsidian does
+ * not leave the renderer unable to repaint when the window returns.
+ */
+const backgroundPdfPageSemaphore =
+  new AsyncSemaphore(1);
+
+let rendererWasBackgrounded =
+  false;
+
+let foregroundRecovery:
+  Promise<void> | null =
+  null;
+
+let completedPagesSinceYield =
+  0;
+
+function isRendererBackgrounded():
+  boolean {
+  const htmlDocument =
+    globalThis.document;
+
+  if (!htmlDocument) {
+    return false;
+  }
+
+  return (
+    htmlDocument.visibilityState !==
+      "visible" ||
+    !htmlDocument.hasFocus()
+  );
+}
+
+async function postRendererTask():
+  Promise<void> {
+  if (
+    typeof MessageChannel !==
+    "undefined"
+  ) {
+    await new Promise<void>(
+      (resolve) => {
+        const channel =
+          new MessageChannel();
+
+        channel.port1.onmessage =
+          () => {
+            channel.port1.close();
+            channel.port2.close();
+            resolve();
+          };
+
+        channel.port2.postMessage(
+          null,
+        );
+      },
+    );
+
+    return;
+  }
+
+  await new Promise<void>(
+    (resolve) => {
+      setTimeout(
+        resolve,
+        0,
+      );
+    },
+  );
+}
+
+async function cooperateWithRenderer():
+  Promise<void> {
+  if (
+    isRendererBackgrounded()
+  ) {
+    rendererWasBackgrounded =
+      true;
+
+    await postRendererTask();
+    return;
+  }
+
+  if (
+    rendererWasBackgrounded
+  ) {
+    rendererWasBackgrounded =
+      false;
+
+    if (!foregroundRecovery) {
+      foregroundRecovery =
+        new Promise<void>(
+          (resolve) => {
+            const raf =
+              globalThis
+                .requestAnimationFrame;
+
+            if (
+              typeof raf ===
+              "function"
+            ) {
+              raf(
+                () => {
+                  raf(
+                    () =>
+                      resolve(),
+                  );
+                },
+              );
+            } else {
+              setTimeout(
+                resolve,
+                0,
+              );
+            }
+          },
+        ).finally(
+          () => {
+            foregroundRecovery =
+              null;
+          },
+        );
+    }
+
+    await foregroundRecovery;
+    return;
+  }
+
+  completedPagesSinceYield +=
+    1;
+
+  /*
+   * A task break every four completed pages is frequent enough to keep
+   * the renderer healthy without adding a frame-sized delay to every
+   * page during normal foreground indexing.
+   */
+  if (
+    completedPagesSinceYield %
+      4 ===
+    0
+  ) {
+    await postRendererTask();
+  }
 }
 
 export class PdfNoTextError
@@ -617,7 +773,12 @@ export async function extractPdf(
    * valid for hashing and diagnostics.
    */
   const data =
-    new Uint8Array(bytes);
+    options.copyInput ===
+      false
+      ? bytes
+      : new Uint8Array(
+          bytes,
+        );
 
   const loadingTask =
     getDocument({
@@ -720,81 +881,109 @@ export async function extractPdf(
       async (
         pageNumber,
       ) => {
-        await pageSemaphore.run(
-          async () => {
-            activePages += 1;
+        const extractPage =
+          async (): Promise<void> =>
+            pageSemaphore.run(
+              async () => {
+                activePages += 1;
 
-            emitProgress(
-              pageNumber,
-            );
+                emitProgress(
+                  pageNumber,
+                );
 
-            let page:
-              Awaited<
-                ReturnType<
-                  typeof document.getPage
-                >
-              > | null = null;
+                let page:
+                  Awaited<
+                    ReturnType<
+                      typeof document.getPage
+                    >
+                  > | null = null;
 
-            try {
-              page =
-                await document
-                  .getPage(
+                try {
+                  /*
+                   * If the app was backgrounded and is returning to the
+                   * foreground, give Electron a paint opportunity before
+                   * starting another fake-worker PDF.js operation.
+                   */
+                  await cooperateWithRenderer();
+
+                  page =
+                    await document
+                      .getPage(
+                        pageNumber,
+                      );
+
+                  const textContent =
+                    await page
+                      .getTextContent();
+
+                  const lines =
+                    reconstructLines(
+                      textContent
+                        .items as
+                        unknown[],
+                    );
+
+                  const text =
+                    lines
+                      .join("\n")
+                      .trim();
+
+                  const pageLabel =
+                    pageLabels?.[
+                      pageNumber - 1
+                    ];
+
+                  pages[
+                    pageNumber - 1
+                  ] = {
+                    pageNumber,
+
+                    pageLabel:
+                      typeof pageLabel ===
+                      "string"
+                        ? pageLabel
+                        : undefined,
+
+                    lines,
+                    text,
+                  };
+                } finally {
+                  page?.cleanup();
+
+                  activePages =
+                    Math.max(
+                      0,
+                      activePages - 1,
+                    );
+
+                  completedPages +=
+                    1;
+
+                  emitProgress(
                     pageNumber,
                   );
 
-              const textContent =
-                await page
-                  .getTextContent();
+                  await cooperateWithRenderer();
+                }
+              },
+            );
 
-              const lines =
-                reconstructLines(
-                  textContent
-                    .items as
-                    unknown[],
-                );
-
-              const text =
-                lines
-                  .join("\n")
-                  .trim();
-
-              const pageLabel =
-                pageLabels?.[
-                  pageNumber - 1
-                ];
-
-              pages[
-                pageNumber - 1
-              ] = {
-                pageNumber,
-
-                pageLabel:
-                  typeof pageLabel ===
-                  "string"
-                    ? pageLabel
-                    : undefined,
-
-                lines,
-                text,
-              };
-            } finally {
-              page?.cleanup();
-
-              activePages =
-                Math.max(
-                  0,
-                  activePages - 1,
-                );
-
-              completedPages +=
-                1;
-
-              emitProgress(
-                pageNumber,
-              );
-            }
-          },
-        );
+        /*
+         * Preserve the configured foreground page concurrency. When the
+         * Obsidian window is minimized/unfocused, all active PDFs share
+         * one additional semaphore so only one new page extraction is
+         * allowed to enter PDF.js at a time.
+         */
+        if (
+          isRendererBackgrounded()
+        ) {
+          await backgroundPdfPageSemaphore
+            .run(
+              extractPage,
+            );
+        } else {
+          await extractPage();
+        }
       },
     );
 

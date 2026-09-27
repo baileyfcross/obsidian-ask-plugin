@@ -65,6 +65,28 @@ const MODEL_CACHE_VERSION =
 const PAD_TOKEN_ID =
   0;
 
+/*
+ * Local ONNX inference runs inside Obsidian's Electron renderer when the
+ * proxy worker cannot be used safely. Large inference batches can therefore
+ * block painting/input long enough for the window to appear black or frozen.
+ *
+ * Start conservatively, then adapt upward only when this machine proves it
+ * can complete batches quickly. Background/minimized windows always use a
+ * single-item micro-batch so returning to Obsidian never has to wait for a
+ * large inference to finish before the renderer can repaint.
+ */
+const LOCAL_INITIAL_MICRO_BATCH =
+  2;
+
+const LOCAL_MAX_MICRO_BATCH =
+  8;
+
+const LOCAL_SLOW_BATCH_MS =
+  900;
+
+const LOCAL_FAST_BATCH_MS =
+  250;
+
 interface EncodedText {
   ids: number[];
   attention_mask?: number[];
@@ -114,6 +136,14 @@ export class LocalEmbeddingService
   private runtimePromise:
     Promise<LocalRuntime> |
     null = null;
+
+  /*
+   * Foreground micro-batch size is learned from actual inference duration.
+   * This is intentionally per plugin session so we do not persist a value
+   * that may be wrong after a machine/Obsidian/runtime change.
+   */
+  private adaptiveMicroBatchSize =
+    LOCAL_INITIAL_MICRO_BATCH;
 
   private readonly modelCacheDir:
     string;
@@ -181,103 +211,290 @@ export class LocalEmbeddingService
         const runtime =
           await this.getRuntime();
 
-        const batch =
-          this.prepareBatch(
-            runtime.tokenizer,
-            input,
+        const vectors:
+          number[][] = [];
+
+        let offset = 0;
+
+        while (
+          offset <
+          input.length
+        ) {
+          const background =
+            this.isRendererBackgrounded();
+
+          const microBatchSize =
+            background
+              ? 1
+              : Math.max(
+                  1,
+                  Math.min(
+                    this.adaptiveMicroBatchSize,
+                    LOCAL_MAX_MICRO_BATCH,
+                  ),
+                );
+
+          const batchInput =
+            input.slice(
+              offset,
+              offset +
+                microBatchSize,
+            );
+
+          /*
+           * Give Chromium a task boundary before tokenization/ONNX work.
+           * Unlike setTimeout(0), MessageChannel is not aggressively
+           * throttled when the Obsidian window is in the background.
+           */
+          await this.yieldToRenderer();
+
+          const startedAt =
+            this.now();
+
+          const batch =
+            this.prepareBatch(
+              runtime.tokenizer,
+              batchInput,
+            );
+
+          const batchVectors =
+            await this.runInferenceBatch(
+              runtime.session,
+              batch,
+            );
+
+          const elapsedMs =
+            Math.max(
+              0,
+              this.now() -
+                startedAt,
+            );
+
+          vectors.push(
+            ...batchVectors,
           );
 
-        const feeds:
-          Record<
-            string,
-            ort.Tensor
-          > = {};
+          offset +=
+            batchInput.length;
 
-        if (
-          runtime.session
-            .inputNames
-            .includes(
-              "input_ids",
-            )
-        ) {
-          feeds.input_ids =
-            new ort.Tensor(
-              "int64",
-              batch.inputIds,
-              [
-                batch.batchSize,
-                batch.sequenceLength,
-              ],
+          if (!background) {
+            this.tuneMicroBatchSize(
+              elapsedMs,
+              batchInput.length,
             );
+          }
+
+          /*
+           * Do not immediately begin another synchronous tokenizer/ONNX
+           * section. This is the point where Electron can process input,
+           * paint, composite, and recover a previously minimized window.
+           */
+          await this.yieldToRenderer();
         }
 
-        if (
-          runtime.session
-            .inputNames
-            .includes(
-              "attention_mask",
-            )
-        ) {
-          feeds.attention_mask =
-            new ort.Tensor(
-              "int64",
-              batch.attentionMask,
-              [
-                batch.batchSize,
-                batch.sequenceLength,
-              ],
-            );
-        }
+        return vectors;
+      },
+    );
+  }
 
-        if (
-          runtime.session
-            .inputNames
-            .includes(
-              "token_type_ids",
-            )
-        ) {
-          feeds.token_type_ids =
-            new ort.Tensor(
-              "int64",
-              batch.tokenTypeIds,
-              [
-                batch.batchSize,
-                batch.sequenceLength,
-              ],
-            );
-        }
+  private async runInferenceBatch(
+    session:
+      ort.InferenceSession,
+    batch:
+      PreparedBatch,
+  ): Promise<number[][]> {
+    const feeds:
+      Record<
+        string,
+        ort.Tensor
+      > = {};
 
-        const missingInputs =
-          runtime.session
-            .inputNames
-            .filter(
-              (name) =>
-                !(name in feeds),
-            );
+    if (
+      session
+        .inputNames
+        .includes(
+          "input_ids",
+        )
+    ) {
+      feeds.input_ids =
+        new ort.Tensor(
+          "int64",
+          batch.inputIds,
+          [
+            batch.batchSize,
+            batch.sequenceLength,
+          ],
+        );
+    }
 
-        if (
-          missingInputs.length > 0
-        ) {
-          throw new Error(
-            `The local ONNX model requires unsupported input(s): ${missingInputs.join(", ")}.`,
+    if (
+      session
+        .inputNames
+        .includes(
+          "attention_mask",
+        )
+    ) {
+      feeds.attention_mask =
+        new ort.Tensor(
+          "int64",
+          batch.attentionMask,
+          [
+            batch.batchSize,
+            batch.sequenceLength,
+          ],
+        );
+    }
+
+    if (
+      session
+        .inputNames
+        .includes(
+          "token_type_ids",
+        )
+    ) {
+      feeds.token_type_ids =
+        new ort.Tensor(
+          "int64",
+          batch.tokenTypeIds,
+          [
+            batch.batchSize,
+            batch.sequenceLength,
+          ],
+        );
+    }
+
+    const missingInputs =
+      session
+        .inputNames
+        .filter(
+          (name) =>
+            !(name in feeds),
+        );
+
+    if (
+      missingInputs.length > 0
+    ) {
+      throw new Error(
+        `The local ONNX model requires unsupported input(s): ${missingInputs.join(", ")}.`,
+      );
+    }
+
+    const outputs =
+      await session.run(
+        feeds,
+      );
+
+    const hidden =
+      this.findHiddenState(
+        outputs,
+      );
+
+    return this.meanPoolAndNormalize(
+      hidden,
+      batch,
+    );
+  }
+
+  private tuneMicroBatchSize(
+    elapsedMs: number,
+    actualBatchSize: number,
+  ): void {
+    if (
+      elapsedMs >=
+        LOCAL_SLOW_BATCH_MS &&
+      this.adaptiveMicroBatchSize >
+        1
+    ) {
+      this.adaptiveMicroBatchSize =
+        Math.max(
+          1,
+          Math.floor(
+            this.adaptiveMicroBatchSize /
+              2,
+          ),
+        );
+
+      return;
+    }
+
+    if (
+      elapsedMs <=
+        LOCAL_FAST_BATCH_MS &&
+      actualBatchSize ===
+        this.adaptiveMicroBatchSize &&
+      this.adaptiveMicroBatchSize <
+        LOCAL_MAX_MICRO_BATCH
+    ) {
+      this.adaptiveMicroBatchSize +=
+        1;
+    }
+  }
+
+  private isRendererBackgrounded():
+    boolean {
+    const htmlDocument =
+      globalThis.document;
+
+    if (!htmlDocument) {
+      return false;
+    }
+
+    return (
+      htmlDocument.visibilityState !==
+        "visible" ||
+      !htmlDocument.hasFocus()
+    );
+  }
+
+  private async yieldToRenderer():
+    Promise<void> {
+    if (
+      typeof MessageChannel !==
+      "undefined"
+    ) {
+      await new Promise<void>(
+        (resolve) => {
+          const channel =
+            new MessageChannel();
+
+          channel.port1.onmessage =
+            () => {
+              channel.port1.close();
+              channel.port2.close();
+              resolve();
+            };
+
+          channel.port2.postMessage(
+            null,
           );
-        }
+        },
+      );
 
-        const outputs =
-          await runtime.session
-            .run(feeds);
+      return;
+    }
 
-        const hidden =
-          this.findHiddenState(
-            outputs,
-          );
-
-        return this.meanPoolAndNormalize(
-          hidden,
-          batch,
+    await new Promise<void>(
+      (resolve) => {
+        setTimeout(
+          resolve,
+          0,
         );
       },
     );
+  }
+
+  private now():
+    number {
+    if (
+      typeof performance !==
+        "undefined" &&
+      typeof performance.now ===
+        "function"
+    ) {
+      return performance.now();
+    }
+
+    return Date.now();
   }
 
   private async getRuntime():
@@ -412,8 +629,30 @@ export class LocalEmbeddingService
             ortWasmPath,
           );
 
-      ort.env.wasm.numThreads =
+      /*
+       * Keep the proxy worker disabled for Obsidian compatibility, but use
+       * two WASM threads when the Electron context supports shared-memory
+       * WebAssembly. ONNX Runtime falls back to one thread otherwise.
+       *
+       * Two threads shortens each blocking inference without consuming all
+       * logical CPUs and making the rest of Obsidian fight the model.
+       */
+      const supportsWasmThreads =
+        typeof SharedArrayBuffer !==
+          "undefined" &&
+        globalThis.crossOriginIsolated ===
+          true;
+
+      const hardwareConcurrency =
+        globalThis.navigator
+          ?.hardwareConcurrency ??
         1;
+
+      ort.env.wasm.numThreads =
+        supportsWasmThreads &&
+        hardwareConcurrency >= 4
+          ? 2
+          : 1;
 
       ort.env.wasm.proxy =
         false;
@@ -832,7 +1071,7 @@ export class LocalEmbeddingService
       batchIndex += 1
     ) {
       const vector =
-        new Float64Array(
+        new Float32Array(
           hiddenSize,
         );
 
